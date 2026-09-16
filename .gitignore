@@ -147,3 +147,9 @@ test-project/
 
 # Netlify
 .netlify
+
+# Meltano UI frontend build output (built by `nox -s ui_build`)
+/src/meltano/ui/static/*
+!/src/meltano/ui/static/.gitkeep
+!/src/meltano/ui/static/MISSING.html
+/src/meltano/ui/frontend/node_modules/
