@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { api, type PluginInfo } from "../api";
@@ -16,6 +16,10 @@ const TYPE_LABELS: Record<string, string> = {
 
 export function Plugins() {
   const plugins = useQuery({ queryKey: ["plugins"], queryFn: api.plugins });
+
+  // Writes a `.source` per connector for another system to read. Secrets are
+  // never in them - each sensitive setting names the env var instead.
+  const exportSources = useMutation({ mutationFn: () => api.exportSources() });
 
   if (plugins.isError) return <ErrorNotice error={plugins.error} />;
 
@@ -36,10 +40,37 @@ export function Plugins() {
             Select one to enter its credentials and settings.
           </p>
         </div>
-        <Link className="btn btn-primary" to="/hub">
-          Add from Hub
-        </Link>
+        <div className="actions-row">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => exportSources.mutate()}
+            disabled={exportSources.isPending}
+            title="Write a .source file per connector, for another system to read"
+          >
+            {exportSources.isPending ? "Exporting…" : "Export .source files"}
+          </button>
+          <Link className="btn btn-primary" to="/hub">
+            Add from Hub
+          </Link>
+        </div>
       </div>
+
+      {exportSources.isSuccess && (
+        <div className="notice notice-info" role="status">
+          <div>
+            Wrote {exportSources.data.written.length} file
+            {exportSources.data.written.length === 1 ? "" : "s"} to{" "}
+            <code>{exportSources.data.directory}</code>.
+          </div>
+          <div className="notice-instruction">
+            Secrets are not included — each sensitive setting names the
+            environment variable that supplies it.
+          </div>
+        </div>
+      )}
+
+      {exportSources.isError && <ErrorNotice error={exportSources.error} />}
 
       {plugins.isLoading ? (
         <Loading rows={4} />

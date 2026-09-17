@@ -16,6 +16,7 @@ from meltano.ui.routers import (
     runs,
     schedules,
     select,
+    sources,
     state,
 )
 
@@ -33,6 +34,7 @@ api_router.include_router(project.router)
 api_router.include_router(runs.router)
 api_router.include_router(schedules.router)
 api_router.include_router(select.router)
+api_router.include_router(sources.router)
 api_router.include_router(state.router)
 
 __all__ = ["API_PREFIX", "api_router"]

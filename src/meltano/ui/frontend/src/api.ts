@@ -133,6 +133,18 @@ export interface JobInfo {
   blocks: string[];
 }
 
+/** One file written by a `.source` export. */
+export interface ExportedSource {
+  name: string;
+  type: string;
+  path: string;
+}
+
+export interface ExportSourcesResponse {
+  directory: string;
+  written: ExportedSource[];
+}
+
 /** One packaging of a Hub plugin. */
 export interface HubVariant {
   name: string;
@@ -338,6 +350,11 @@ export const api = {
     }),
   // Only a projectless server answers these; a serving one 404s, which is how
   // the app decides which of its two faces to show.
+  exportSources: (path?: string) =>
+    request<ExportSourcesResponse>("/sources/export", {
+      method: "POST",
+      body: JSON.stringify(path ? { path } : {}),
+    }),
   setupState: () => request<SetupState>("/setup"),
   createProject: (body: { path: string; force?: boolean }) =>
     request<SetupResult>("/setup/create", {
