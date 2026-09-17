@@ -10,6 +10,7 @@ from meltano.ui.routers import (
     config,
     hub,
     jobs,
+    mappings,
     meta,
     plugins,
     project,
@@ -29,6 +30,7 @@ api_router = APIRouter(prefix=API_PREFIX)
 api_router.include_router(config.router)
 api_router.include_router(hub.router)
 api_router.include_router(jobs.router)
+api_router.include_router(mappings.router)
 api_router.include_router(meta.router)
 api_router.include_router(plugins.router)
 api_router.include_router(project.router)

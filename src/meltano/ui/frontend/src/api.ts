@@ -167,6 +167,14 @@ export interface PreviewResponse {
   stream_map: Record<string, unknown>;
 }
 
+/** A named mapping stored under a mapper plugin. */
+export interface MappingInfo {
+  name: string;
+  mapper: string;
+  streams: string[];
+  stream_maps: Record<string, unknown>;
+}
+
 /** One file written by a `.source` export. */
 export interface ExportedSource {
   name: string;
@@ -394,6 +402,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  mappings: () => request<MappingInfo[]>("/mappings"),
+  // Compiles the steps server-side, so what is saved is what the preview showed.
+  saveMapping: (body: {
+    name: string;
+    stream: string;
+    steps: TransformStep[];
+    mapper?: string;
+    overwrite?: boolean;
+  }) =>
+    request<MappingInfo>("/mappings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteMapping: (name: string) =>
+    request<void>(`/mappings/${encodeURIComponent(name)}`, { method: "DELETE" }),
   exportSources: (path?: string) =>
     request<ExportSourcesResponse>("/sources/export", {
       method: "POST",

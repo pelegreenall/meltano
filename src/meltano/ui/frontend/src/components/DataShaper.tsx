@@ -230,11 +230,22 @@ export function DataShaper({
   const [steps, setSteps] = useState<TransformStep[]>([]);
   const [result, setResult] = useState<PreviewResponse | null>(null);
   const [limit, setLimit] = useState(20);
+  const [mappingName, setMappingName] = useState("");
 
   const run = useMutation({
     mutationFn: (next: TransformStep[]) =>
       api.preview(pluginType, name, { stream, limit, steps: next }),
     onSuccess: setResult,
+  });
+
+  const save = useMutation({
+    mutationFn: (target: string) =>
+      api.saveMapping({
+        name: mappingName.trim(),
+        stream: target,
+        steps,
+        overwrite: true,
+      }),
   });
 
   // Every edit re-runs the preview, which is what makes this a loop rather
@@ -247,6 +258,10 @@ export function DataShaper({
 
   const streams = Object.keys(result?.schemas ?? {});
   const columns = result?.columns ?? [];
+
+  // A mapping's stream maps are keyed by stream, so saving needs exactly one.
+  // With a single-stream tap that is unambiguous; otherwise one must be chosen.
+  const target = stream ?? (streams.length === 1 ? streams[0] : null);
 
   return (
     <div className="section">
@@ -410,6 +425,62 @@ export function DataShaper({
               </table>
             )}
           </div>
+
+          {steps.length > 0 && (
+            <div className="card" style={{ marginTop: "var(--s4)" }}>
+              <div className="section-head">
+                <h2>Save as a mapping</h2>
+              </div>
+              <p className="page-sub">
+                Stores these steps under a mapper plugin so a pipeline can use
+                them: <code>meltano run {name} &lt;mapping&gt; &lt;loader&gt;</code>.
+              </p>
+              <div className="composer">
+                <label className="field">
+                  <span className="field-label">Mapping name</span>
+                  <input
+                    type="text"
+                    value={mappingName}
+                    placeholder="tidy-customers"
+                    onChange={(event) => setMappingName(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => target && save.mutate(target)}
+                  disabled={
+                    save.isPending || mappingName.trim() === "" || !target
+                  }
+                  title={
+                    target
+                      ? undefined
+                      : "Choose a single stream first — a mapping is keyed by stream"
+                  }
+                >
+                  {save.isPending ? "Saving…" : "Save mapping"}
+                </button>
+              </div>
+
+              {save.isSuccess && (
+                <div className="notice notice-info" role="status">
+                  <div>
+                    Saved <code>{save.data.name}</code> to{" "}
+                    <code>{save.data.mapper}</code>.
+                  </div>
+                  <div className="notice-instruction">
+                    Use it with{" "}
+                    <code>
+                      meltano run {name} {save.data.name} &lt;loader&gt;
+                    </code>
+                    . The mapper plugin has to be installed for a run to apply
+                    it.
+                  </div>
+                </div>
+              )}
+              {save.isError && <ErrorNotice error={save.error} />}
+            </div>
+          )}
 
           {steps.length > 0 && (
             <details className="card" style={{ marginTop: "var(--s4)" }}>
