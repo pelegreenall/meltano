@@ -133,6 +133,40 @@ export interface JobInfo {
   blocks: string[];
 }
 
+/** One edit in an ordered list, in the shape the server compiles. */
+export interface TransformStep {
+  kind: "drop" | "rename" | "cast" | "filter";
+  column: string;
+  to?: string | null;
+  type?: "integer" | "number" | "string" | "boolean" | null;
+  operator?:
+    | "eq"
+    | "ne"
+    | "gt"
+    | "gte"
+    | "lt"
+    | "lte"
+    | "contains"
+    | "is_null"
+    | "not_null"
+    | null;
+  value?: unknown;
+}
+
+/** Rows read from an extractor, after any steps were applied. */
+export interface PreviewResponse {
+  extractor: string;
+  stream: string | null;
+  columns: string[];
+  schemas: Record<string, string[]>;
+  rows: Record<string, unknown>[];
+  row_count: number;
+  read_count: number;
+  truncated: boolean;
+  timed_out: boolean;
+  stream_map: Record<string, unknown>;
+}
+
 /** One file written by a `.source` export. */
 export interface ExportedSource {
   name: string;
@@ -350,6 +384,16 @@ export const api = {
     }),
   // Only a projectless server answers these; a serving one 404s, which is how
   // the app decides which of its two faces to show.
+  // Runs the extractor alone and stops it at the limit. Writes nothing.
+  preview: (
+    type: string,
+    name: string,
+    body: { stream?: string | null; limit?: number; steps?: TransformStep[] },
+  ) =>
+    request<PreviewResponse>(`/plugins/${type}/${name}/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   exportSources: (path?: string) =>
     request<ExportSourcesResponse>("/sources/export", {
       method: "POST",

@@ -297,6 +297,66 @@ class TestPipelineEndToEnd:
         assert body["streams"] == ["widgets"]
         assert body["state"]["singer_state"]["bookmarks"]["widgets"] == {"id": 2}
 
+    def test_a_real_extractor_can_be_previewed(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """Rows come back from an actual tap, shaped by actual steps.
+
+        The preview endpoint's own tests stub the tap out, so this is the only
+        check that the Singer output of a real process is parsed, capped, and
+        that the tap is stopped afterwards rather than left running.
+        """
+        response = ui_client.post(
+            "/api/v1/plugins/extractors/fake-tap/preview",
+            json={
+                "stream": "widgets",
+                "limit": 10,
+                "steps": [
+                    {"kind": "rename", "column": "name", "to": "label"},
+                    {
+                        "kind": "filter",
+                        "column": "id",
+                        "operator": "gt",
+                        "value": 1,
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        # The tap emits two records; the filter keeps one.
+        assert body["read_count"] == 2
+        assert body["rows"] == [{"id": 2, "label": "beta"}]
+        assert body["schemas"]["widgets"] == ["id", "name"]
+        assert body["stream_map"] == {
+            "label": "record['name']",
+            "name": None,
+            "__filter__": "(record['id'] > 1)",
+        }
+
+    def test_a_preview_writes_nothing(
+        self,
+        ui_client: TestClient,
+        singer_pipeline: Path,
+    ) -> None:
+        """A preview must not load, bookmark, or otherwise leave a trace.
+
+        It is run repeatedly while someone is still deciding what they want,
+        so a preview with side effects would be worse than no preview.
+        """
+        before = ui_client.get("/api/v1/state").json()
+
+        ui_client.post(
+            "/api/v1/plugins/extractors/fake-tap/preview",
+            json={"stream": "widgets"},
+        )
+
+        assert ui_client.get("/api/v1/state").json() == before
+        assert not singer_pipeline.exists()
+
     def test_a_job_defined_over_http_is_runnable(
         self,
         ui_client: TestClient,

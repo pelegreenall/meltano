@@ -18,6 +18,7 @@ from meltano.ui.routers import (
     select,
     sources,
     state,
+    transforms,
 )
 
 #: Versioned from the first release: the previous Meltano API's lack of
@@ -36,5 +37,6 @@ api_router.include_router(schedules.router)
 api_router.include_router(select.router)
 api_router.include_router(sources.router)
 api_router.include_router(state.router)
+api_router.include_router(transforms.router)
 
 __all__ = ["API_PREFIX", "api_router"]

@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { api, configApi, type SettingInfo } from "../api";
 import { PluginActions } from "../components/PluginActions";
+import { DataShaper } from "../components/DataShaper";
 import { SelectEditor } from "../components/SelectEditor";
 import { ErrorNotice, Loading } from "../components/Status";
 import { SettingField } from "../components/SettingField";
@@ -120,7 +121,10 @@ export function PluginDetail() {
       </div>
 
       {config.data!.type === "extractors" && (
-        <SelectEditor pluginType={pluginType} name={name} />
+        <>
+          <DataShaper pluginType={pluginType} name={name} />
+          <SelectEditor pluginType={pluginType} name={name} />
+        </>
       )}
     </>
   );
