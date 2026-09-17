@@ -36,6 +36,9 @@ export function Plugins() {
             Select one to enter its credentials and settings.
           </p>
         </div>
+        <Link className="btn btn-primary" to="/hub">
+          Add from Hub
+        </Link>
       </div>
 
       {plugins.isLoading ? (
@@ -44,7 +47,7 @@ export function Plugins() {
         <div className="table-wrap">
           <Empty
             title="No plugins installed"
-            hint="Add one with `meltano add tap-github`."
+            hint="Browse Meltano Hub to add an extractor and a loader."
           />
         </div>
       ) : (

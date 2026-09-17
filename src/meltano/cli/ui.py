@@ -7,12 +7,18 @@ to keep working for the majority of users, who will never install it.
 
 from __future__ import annotations
 
+import typing as t
+from dataclasses import replace
+
 import click
 
-from meltano.cli.params import pass_project
+from meltano.cli.params import database_uri_option
 from meltano.cli.utils import CliEnvironmentBehavior, InstrumentedCmd
-from meltano.core.project import Project  # noqa: TC001
+from meltano.core.project import Project
 from meltano.core.utils import run_async
+
+if t.TYPE_CHECKING:
+    from pathlib import Path
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5001
@@ -59,9 +65,10 @@ DEFAULT_PORT = 5001
     envvar="MELTANO_UI_READONLY",
     help="Refuse every request that would modify the project.",
 )
-@pass_project(migrate=True)
+@database_uri_option
+@click.pass_context
 def ui(
-    project: Project,
+    ctx: click.Context,
     *,
     host: str,
     port: int,
@@ -72,8 +79,10 @@ def ui(
     """Run the Meltano web UI.
 
     The UI is a local, single-user development server. It serves a browser
-    application for inspecting runs, configuring plugins and scaffolding
-    connectors.
+    application for inspecting runs and configuring plugins.
+
+    Run outside a project, it offers to create one or open an existing one,
+    then restarts to serve it.
 
     \b
     Requires the `ui` extra:
@@ -113,7 +122,64 @@ def ui(
     click.echo("Meltano UI is starting. Open:")
     click.secho(f"  {settings.url}", fg="green", bold=True)
 
-    from meltano.ui.server import serve
+    from meltano.ui.server import serve, serve_setup
 
-    # `run_async` decorates a coroutine *function*; it does not run a coroutine.
+    # Deliberately not `pass_project`, which refuses to run outside a project.
+    # Here that is the interesting case rather than an error.
+    project = ctx.obj["project"]
+
+    if project is None:
+        # `run_async` decorates a coroutine *function*; it does not run one.
+        chosen = run_async(serve_setup)(settings)
+        if chosen is None:
+            # Interrupted before choosing. Nothing was created that needs
+            # undoing, so there is nothing to report.
+            return
+
+        project = _open_project(ctx, chosen)
+        click.echo(f"Now serving {chosen}. Reload the page if it does not.")
+        # The browser is already open on this port, and the token has not
+        # changed, so the second server must not open another window.
+        settings = replace(settings, open_browser=False)
+
     run_async(serve)(project, settings)
+
+
+def _open_project(ctx: click.Context, root: Path) -> Project:
+    """Activate a project and bring its system database up to date.
+
+    This is `pass_project`'s work, done by hand because the project is chosen
+    at runtime rather than found before the command starts. Activation is safe
+    here and only here: the setup server has stopped, and nothing in this
+    process has activated a project yet.
+
+    Args:
+        ctx: The Click context, for the root group's environment options.
+        root: The project's root directory.
+
+    Returns:
+        The activated project.
+    """
+    from meltano.cli.cli import detect_selected_environment
+    from meltano.core.db import project_engine
+    from meltano.core.migration_service import MigrationService
+
+    project = Project(root)
+    Project.activate(project)
+
+    # The group callback picks the environment before the command runs, which
+    # for a projectless launch was too early to pick anything. Redone here so
+    # that a project chosen in the browser gets the same `default_environment`
+    # a project found on disk would, rather than silently running with none.
+    root_params = ctx.find_root().params
+    if selected := detect_selected_environment(
+        cli_environment=root_params.get("environment"),
+        cli_no_environment=bool(root_params.get("no_environment")),
+        project=project,
+    )[0]:
+        project.activate_environment(selected)
+
+    engine, _ = project_engine(project, default=True)
+    MigrationService(engine).upgrade(silent=True)
+
+    return project

@@ -3,24 +3,36 @@
 from __future__ import annotations
 
 import typing as t
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from meltano.core.error import MeltanoError
 from meltano.core.task_sets_service import TaskSetsService
 from meltano.core.utils import new_run_id
-from meltano.ui.deps import CtxDep, require_auth
-from meltano.ui.schemas.runs import RunInfo, RunLog, RunRequest
-from meltano.ui.services import log_stream
-from meltano.ui.services.run_manager import RunKind
+from meltano.ui.deps import CtxDep, SessionDep, require_auth
+from meltano.ui.schemas.runs import RunInfo, RunJobInfo, RunLog, RunRequest
+from meltano.ui.services import log_stream, run_history
+from meltano.ui.services.run_manager import RunKind, RunStatus
 
 if t.TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from meltano.core.job import Job
     from meltano.core.project import Project
+    from meltano.ui.services.run_manager import RunRecord
 
 router = APIRouter(tags=["runs"], dependencies=[Depends(require_auth)])
+
+#: How many runs `GET /runs` returns when the caller does not say. Large
+#: enough to fill the UI's list without paging, small enough that a long-lived
+#: project does not serialize its entire history on every poll.
+DEFAULT_RUN_LIMIT = 50
+MAX_RUN_LIMIT = 500
+
+#: Sorts ahead of any real timestamp, for the malformed-value case below.
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
 
 class UnknownBlockError(MeltanoError):
@@ -67,37 +79,156 @@ def validate_blocks(project: Project, blocks: Sequence[str]) -> None:
             raise UnknownBlockError(block)
 
 
+def _isoformat(value: datetime | None) -> str | None:
+    """Render a timestamp the way supervised records render theirs.
+
+    Args:
+        value: The timestamp, or None.
+
+    Returns:
+        An ISO-8601 string, or None.
+    """
+    return value.isoformat() if value is not None else None
+
+
+def _sort_key(info: RunInfo) -> datetime:
+    """Return the instant a run started, for ordering.
+
+    Parsed rather than compared as text: the two sources format timestamps
+    identically today, but ordering the run list is not the right place to
+    depend on that.
+
+    Args:
+        info: The run to place.
+
+    Returns:
+        The parsed start time, or the epoch if it cannot be parsed.
+    """
+    try:
+        return datetime.fromisoformat(info.started_at)
+    except ValueError:
+        return _EPOCH
+
+
+def _describe(
+    run_id: str,
+    record: RunRecord | None,
+    jobs: Sequence[Job],
+) -> RunInfo:
+    """Combine what this server supervised with what the database recorded.
+
+    Args:
+        run_id: The run being described.
+        record: The supervised record, or None for a run this server did not
+            launch.
+        jobs: The system-database rows sharing this run ID.
+
+    Returns:
+        The merged view.
+    """
+    job_infos = [
+        RunJobInfo(
+            job_name=job.job_name,
+            state=str(job.state),
+            started_at=_isoformat(job.started_at),
+            ended_at=_isoformat(job.ended_at),
+            trigger=job.trigger,
+        )
+        for job in jobs
+    ]
+    recorded = run_history.status_from_jobs(jobs)
+
+    if record is None:
+        # History-only: known from the `runs` table alone, so there is no argv
+        # to show and no captured output to stream.
+        started = jobs[0].started_at if jobs else None
+        ended = [job.ended_at for job in jobs]
+        return RunInfo(
+            run_id=run_id,
+            kind=RunKind.run.value,
+            status=(recorded or RunStatus.unknown).value,
+            started_at=_isoformat(started) or _EPOCH.isoformat(),
+            finished_at=(
+                _isoformat(max(ended))  # type: ignore[type-var]
+                if ended and all(value is not None for value in ended)
+                else None
+            ),
+            jobs=job_infos,
+            has_log=False,
+        )
+
+    status_ = record.status
+    if status_ is RunStatus.unknown and recorded is not None:
+        # `RunStatus.unknown` means the server restarted mid-run and lost
+        # track of the process. The row is authoritative there, as the enum's
+        # own definition says.
+        status_ = recorded
+
+    return RunInfo(
+        **{**record.to_dict(), "status": status_.value},
+        jobs=job_infos,
+        has_log=True,
+    )
+
+
 @router.get("/runs", response_model=list[RunInfo])
-def list_runs(ctx: CtxDep) -> list[RunInfo]:
-    """List every run this server knows about, newest first.
+def list_runs(
+    ctx: CtxDep,
+    session: SessionDep,
+    limit: int = Query(DEFAULT_RUN_LIMIT, ge=1, le=MAX_RUN_LIMIT),
+) -> list[RunInfo]:
+    """List runs, newest first.
+
+    Merges the subprocesses this server supervised with the system database's
+    record of every execution, so runs started from a terminal or by an
+    earlier server process are not missing from the list.
 
     Args:
         ctx: The application context.
+        session: A system-database session.
+        limit: The maximum number of runs to return.
 
     Returns:
-        The known run records.
+        The merged run list.
     """
-    return [RunInfo(**record.to_dict()) for record in ctx.run_manager.list_runs()]
+    supervised = {record.run_id: record for record in ctx.run_manager.list_runs()}
+    history_ids = run_history.recent_run_ids(session, limit=limit)
+
+    # Supervised runs are included even when they fall outside the history
+    # window, and install/test tasks are included even though they never
+    # produce a row at all.
+    jobs = run_history.jobs_by_run_id(session, set(history_ids) | set(supervised))
+
+    run_ids = [*supervised, *(rid for rid in history_ids if rid not in supervised)]
+    runs = [
+        _describe(run_id, supervised.get(run_id), jobs.get(run_id, ()))
+        for run_id in run_ids
+    ]
+    runs.sort(key=_sort_key, reverse=True)
+    return runs[:limit]
 
 
 @router.get("/runs/{run_id}", response_model=RunInfo)
-def get_run(run_id: str, ctx: CtxDep) -> RunInfo:
+def get_run(run_id: str, ctx: CtxDep, session: SessionDep) -> RunInfo:
     """Return a single run.
 
     Args:
         run_id: The run to fetch.
         ctx: The application context.
+        session: A system-database session.
 
     Returns:
         The run record.
 
     Raises:
-        HTTPException: 404 when the run is unknown.
+        HTTPException: 404 when neither this server nor the database knows the
+            run.
     """
     record = ctx.run_manager.get(run_id)
-    if record is None:
+    jobs = run_history.jobs_by_run_id(session, (run_id,)).get(run_id, ())
+    if record is None and not jobs:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown run")
-    return RunInfo(**record.to_dict())
+    return _describe(run_id, record, jobs)
 
 
 @router.post("/runs", response_model=RunInfo, status_code=status.HTTP_202_ACCEPTED)
@@ -130,7 +261,8 @@ async def start_run(payload: RunRequest, ctx: CtxDep) -> RunInfo:
         run_id=run_id,
         environment=ctx.environment_name,
     )
-    return RunInfo(**record.to_dict())
+    # No rows exist yet - the subprocess has only just been spawned.
+    return _describe(record.run_id, record, ())
 
 
 @router.delete("/runs/{run_id}", response_model=RunInfo)
@@ -150,7 +282,7 @@ async def cancel_run(run_id: str, ctx: CtxDep) -> RunInfo:
     record = await ctx.run_manager.cancel(run_id)
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Unknown run")
-    return RunInfo(**record.to_dict())
+    return _describe(record.run_id, record, ())
 
 
 @router.get("/runs/{run_id}/log", response_model=RunLog)

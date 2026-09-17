@@ -35,7 +35,7 @@ import structlog
 from meltano.core.utils import new_run_id
 
 if t.TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Sequence
+    from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
     from pathlib import Path
     from uuid import UUID
 
@@ -337,6 +337,7 @@ class RunManager:
         kind: RunKind,
         run_id: str | None = None,
         environment: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> RunRecord:
         """Spawn a supervised subprocess.
 
@@ -345,6 +346,8 @@ class RunManager:
             kind: What the command is doing.
             run_id: Identifier to use; generated when omitted.
             environment: The Meltano environment in effect.
+            env: Extra environment variables for the child, such as the `env`
+                a schedule declares. Layered over the server's own environment.
 
         Returns:
             The record for the started process.
@@ -367,9 +370,12 @@ class RunManager:
         live = _LiveRun(record=record)
         self._runs[run_id] = live
 
-        env = {
+        child_env = {
             **os.environ,
-            # Attributes the resulting `Job` row to the UI rather than the CLI.
+            **(env or {}),
+            # Last so that it cannot be overridden: the resulting `Job` row is
+            # attributed to the UI rather than the CLI whatever the caller
+            # passes.
             "MELTANO_JOB_TRIGGER": "ui",
         }
 
@@ -382,7 +388,7 @@ class RunManager:
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=self.project.root,
-            env=env,
+            env=child_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             **creation,

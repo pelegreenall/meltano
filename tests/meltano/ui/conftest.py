@@ -15,6 +15,7 @@ if t.TYPE_CHECKING:
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    from sqlalchemy.orm import Session
 
     from meltano.core.project import Project
 
@@ -108,6 +109,38 @@ def ui_client(ui_app: FastAPI) -> Iterator[TestClient]:
         headers={"Authorization": f"Bearer {TEST_TOKEN}"},
     ) as client:
         yield client
+
+
+@pytest.fixture
+def ui_client_with_history(ui_app: FastAPI, session: Session) -> Iterator[TestClient]:
+    """Yield an authenticated client whose handlers see the test session.
+
+    The `session` fixture runs inside a transaction that is rolled back, so
+    rows it writes are invisible to a session opened on another connection -
+    which is what `get_session` would otherwise hand the handler. Overriding
+    the dependency points the handlers at the same connection, so tests can
+    seed run history and then read it back over HTTP.
+
+    Args:
+        ui_app: The application under test.
+        session: The test database session.
+
+    Yields:
+        An authenticated client sharing the test transaction.
+    """
+    from fastapi.testclient import TestClient
+
+    from meltano.ui.deps import get_session
+
+    ui_app.dependency_overrides[get_session] = lambda: session
+    try:
+        with TestClient(
+            ui_app,
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        ) as client:
+            yield client
+    finally:
+        ui_app.dependency_overrides.clear()
 
 
 @pytest.fixture

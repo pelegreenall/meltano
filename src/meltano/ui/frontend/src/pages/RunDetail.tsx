@@ -4,7 +4,13 @@ import { Link, useParams } from "react-router-dom";
 
 import { api, type RunStatus } from "../api";
 import { LogViewer } from "../components/LogViewer";
-import { ErrorNotice, Loading, StatusBadge } from "../components/Status";
+import {
+  Empty,
+  ErrorNotice,
+  JobStateBadge,
+  Loading,
+  StatusBadge,
+} from "../components/Status";
 import { formatDuration } from "../format";
 import { pipelineOf } from "./Overview";
 
@@ -45,7 +51,7 @@ export function RunDetail() {
     <>
       <div className="page-head">
         <div>
-          <h1>{pipelineOf(data.argv)}</h1>
+          <h1>{pipelineOf(data)}</h1>
           <p className="page-sub">
             <Link to="/runs">Runs</Link> · <span>{data.run_id}</span>
           </p>
@@ -81,7 +87,12 @@ export function RunDetail() {
         </div>
         <div className="stat">
           <span className="stat-label">Environment</span>
-          <span className="stat-value is-text">{data.environment ?? "none"}</span>
+          <span className="stat-value is-text">
+            {/* Only a supervised run can report that it had no environment.
+                For one known solely from the database the field was never
+                captured, so claiming "none" would be wrong. */}
+            {data.environment ?? (data.has_log ? "none" : "unknown")}
+          </span>
         </div>
       </div>
 
@@ -95,8 +106,60 @@ export function RunDetail() {
         <div className="section-head">
           <h2>Output</h2>
         </div>
-        <LogViewer runId={runId} onFinished={handleFinished} />
+        {data.has_log ? (
+          <LogViewer runId={runId} onFinished={handleFinished} />
+        ) : (
+          <div className="table-wrap">
+            <Empty
+              title="No output captured"
+              hint="This run was recorded in the system database but not started by this server, so its output was never captured here."
+            />
+          </div>
+        )}
       </div>
+
+      {data.jobs.length > 0 && (
+        <div className="section">
+          <div className="section-head">
+            <h2>Blocks</h2>
+            <span className="nav-count">{data.jobs.length}</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>State ID</th>
+                  <th>Result</th>
+                  <th>Trigger</th>
+                  <th className="cell-num">Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.jobs.map((job, index) => (
+                  <tr key={`${job.job_name}-${index}`}>
+                    <td className="cell-mono">
+                      <Link
+                        to={`/state?pattern=${encodeURIComponent(job.job_name)}`}
+                      >
+                        {job.job_name}
+                      </Link>
+                    </td>
+                    <td>
+                      <JobStateBadge state={job.state} />
+                    </td>
+                    <td className="cell-mono">{job.trigger ?? "—"}</td>
+                    <td className="cell-num cell-mono">
+                      {job.started_at
+                        ? formatDuration(job.started_at, job.ended_at)
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="section">
         <div className="section-head">
@@ -105,9 +168,11 @@ export function RunDetail() {
         <div className="card">
           <div className="meta-grid">
             <span className="meta-key">Command</span>
-            <span className="meta-val">{data.argv.join(" ")}</span>
+            <span className="meta-val">
+              {data.argv.length > 0 ? data.argv.join(" ") : "—"}
+            </span>
             <span className="meta-key">Log file</span>
-            <span className="meta-val">{data.log_path}</span>
+            <span className="meta-val">{data.log_path ?? "—"}</span>
             <span className="meta-key">Process ID</span>
             <span className="meta-val">{data.pid ?? "—"}</span>
             <span className="meta-key">Started</span>

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 # degrades the parameter into a query field instead of raising.
 from meltano.core.project import Project
 from meltano.ui import security
-from meltano.ui.context import AppContext
+from meltano.ui.context import AppContext, SetupContext
 
 if t.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -98,6 +98,40 @@ def require_auth(request: Request, ctx: CtxDep) -> None:
     security.check_writable(request, ctx)
 
 
+def get_setup_ctx(request: Request) -> SetupContext:
+    """Return the context of a server that has no project yet.
+
+    Setup mode cannot use `get_ctx`: there is no project to re-read and no
+    `ProjectWatcher` to ask about staleness.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The context stored on the app at startup.
+    """
+    return t.cast("SetupContext", request.app.state.ctx)
+
+
+SetupCtxDep = t.Annotated[SetupContext, Depends(get_setup_ctx)]
+
+
+def require_setup_auth(request: Request, ctx: SetupCtxDep) -> None:
+    """Enforce the same admission policy on the setup server.
+
+    A server sitting on the setup screen is still an open port that can write
+    to the filesystem, so it is gated exactly as the full server is.
+
+    Args:
+        request: The incoming request.
+        ctx: The setup context.
+    """
+    security.check_host(request, ctx)
+    security.check_origin(request, ctx)
+    security.check_token(request, ctx)
+    security.check_writable(request, ctx)
+
+
 ProjectDep = t.Annotated[Project, Depends(get_project)]
 SessionDep = t.Annotated[Session, Depends(get_session)]
 
@@ -105,8 +139,11 @@ __all__ = [
     "CtxDep",
     "ProjectDep",
     "SessionDep",
+    "SetupCtxDep",
     "get_ctx",
     "get_project",
     "get_session",
+    "get_setup_ctx",
     "require_auth",
+    "require_setup_auth",
 ]

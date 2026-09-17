@@ -810,3 +810,166 @@ input[type="password"]:hover {
   font-size: 11px;
   color: var(--text-subtle);
 }
+
+/* ---------- Plugin actions ---------- */
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.actions-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.actions-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--warn-wash);
+}
+
+/* ---------- Jobs and run history ---------- */
+
+/* One badge-and-name pair per `Job` row a run produced. Stacked rather than
+   inline so a multi-block pipeline stays readable in a table cell. */
+.job-states {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.job-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.job-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  align-items: flex-start;
+}
+
+.job-tasks code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 2px var(--s2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+}
+
+/* For facts about a row that are worth stating but not worth emphasis, such
+   as a run whose output this server never captured. */
+.tag-quiet {
+  margin-left: var(--s2);
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-subtle);
+}
+
+/* A state payload is JSON the reader scans rather than prose; it keeps its own
+   line breaks and scrolls on its own so a deep bookmark cannot widen the page. */
+.state-payload {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: var(--s3);
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+}
+
+/* ---------- Select patterns ---------- */
+
+.pattern-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/* A pattern reads as one token with its own removal control, so that the
+   glob and the button that deletes it cannot be mistaken for two things. */
+.pattern {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 3px var(--s2) 3px var(--s3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.pattern-negated {
+  border-color: var(--err);
+  background: var(--err-wash);
+  color: var(--err);
+}
+
+.pattern-remove {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  /* A glyph this small needs a deliberate hit area; 24px is the minimum
+     target size, and the pattern token is only a little taller than that. */
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.pattern-remove:hover:not(:disabled) {
+  opacity: 1;
+}
+.pattern-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+/* Marks a pattern that is in effect but not declared, so the reader can see
+   why it has no removal control. */
+.pattern-default {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-subtle);
+}
+
+/* ---------- Setup screen ---------- */
+
+/* The setup screen has no sidebar - there is nothing to navigate yet - so it
+   centres its own column rather than inheriting the shell's grid. */
+.setup {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--s7) var(--s5);
+}

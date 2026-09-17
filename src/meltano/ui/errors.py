@@ -14,6 +14,14 @@ if t.TYPE_CHECKING:
     from fastapi import FastAPI, Request
 
 
+#: 422 Unprocessable Content, as an integer rather than a Starlette constant.
+#: `HTTP_422_UNPROCESSABLE_ENTITY` is deprecated in current Starlette and warns
+#: (which this project promotes to an error), while the replacement name does
+#: not exist on the oldest release `fastapi>=0.115` permits. The literal is
+#: correct on every version in range.
+HTTP_422_UNPROCESSABLE = 422
+
+
 def _payload(exc: Exception, *, code: str) -> dict[str, t.Any]:
     reason = getattr(exc, "reason", None)
     instruction = getattr(exc, "instruction", None)

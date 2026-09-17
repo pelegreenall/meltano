@@ -2,7 +2,9 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 
-import { configApi, type SettingInfo } from "../api";
+import { api, configApi, type SettingInfo } from "../api";
+import { PluginActions } from "../components/PluginActions";
+import { SelectEditor } from "../components/SelectEditor";
 import { ErrorNotice, Loading } from "../components/Status";
 import { SettingField } from "../components/SettingField";
 
@@ -15,6 +17,10 @@ export function PluginDetail() {
     queryKey: ["config", pluginType, name],
     queryFn: () => configApi.read(pluginType, name),
   });
+
+  const plugins = useQuery({ queryKey: ["plugins"], queryFn: api.plugins });
+  const isInstalled =
+    plugins.data?.find((plugin) => plugin.name === name)?.is_installed ?? false;
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["config", pluginType, name] });
@@ -49,6 +55,18 @@ export function PluginDetail() {
             {secrets > 0 && `, ${secrets} of them secret`}
           </p>
         </div>
+      </div>
+
+      <div className="section" style={{ marginTop: 0 }}>
+        <PluginActions
+          pluginType={pluginType}
+          name={name}
+          isInstalled={isInstalled}
+          disabled={save.isPending || clear.isPending}
+          onStarted={() =>
+            queryClient.invalidateQueries({ queryKey: ["plugins"] })
+          }
+        />
       </div>
 
       <div className="notice notice-info">
@@ -100,6 +118,10 @@ export function PluginDetail() {
           </div>
         )}
       </div>
+
+      {config.data!.type === "extractors" && (
+        <SelectEditor pluginType={pluginType} name={name} />
+      )}
     </>
   );
 }

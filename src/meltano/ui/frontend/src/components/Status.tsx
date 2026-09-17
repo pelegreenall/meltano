@@ -15,6 +15,21 @@ export function StatusBadge({ status }: { status: RunStatus }) {
   return <span className={`badge ${tone.cls}`}>{tone.label}</span>;
 }
 
+/** Core's `State` enum, as stored on each `Job` row. */
+const JOB_STATE: Record<string, { cls: string; label: string }> = {
+  SUCCESS: { cls: "badge-ok", label: "Succeeded" },
+  FAIL: { cls: "badge-err", label: "Failed" },
+  // A run whose heartbeat stopped. Not a success, and not still going.
+  DEAD: { cls: "badge-err", label: "Stalled" },
+  RUNNING: { cls: "badge-info badge-running", label: "Running" },
+  IDLE: { cls: "badge-idle", label: "Queued" },
+};
+
+export function JobStateBadge({ state }: { state: string }) {
+  const tone = JOB_STATE[state] ?? { cls: "badge-idle", label: state };
+  return <span className={`badge ${tone.cls}`}>{tone.label}</span>;
+}
+
 export function Empty({ title, hint }: { title: string; hint: string }) {
   return (
     <div className="empty">

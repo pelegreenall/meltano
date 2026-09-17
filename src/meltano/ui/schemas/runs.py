@@ -22,19 +22,54 @@ class RunRequest(BaseModel):
     force: bool = False
 
 
+class RunJobInfo(BaseModel):
+    """One `Job` row in the system database produced by a run.
+
+    A single `meltano run` writes one row per ExtractLoadBlock, so a run with
+    several blocks reports several of these.
+    """
+
+    job_name: str = Field(description="The block set's state ID.")
+    state: str = Field(description="Core's job state, e.g. 'SUCCESS'.")
+    started_at: str | None = None
+    ended_at: str | None = None
+    trigger: str | None = Field(
+        default=None,
+        description="What launched the run, from `MELTANO_JOB_TRIGGER`.",
+    )
+
+
 class RunInfo(BaseModel):
-    """The state of one supervised subprocess."""
+    """One run, whether this server supervised it or merely recorded it.
+
+    Runs launched from a terminal, or by a previous server process, are known
+    only from the system database and so carry no `argv` or log.
+    """
 
     run_id: str
     kind: str
     status: str
-    argv: list[str]
     started_at: str
-    log_path: str
+    argv: list[str] = Field(
+        default_factory=list,
+        description="Empty for runs this server did not launch.",
+    )
+    log_path: str | None = Field(
+        default=None,
+        description="Null for runs this server did not launch.",
+    )
     environment: str | None = None
     pid: int | None = None
     finished_at: str | None = None
     exit_code: int | None = None
+    jobs: list[RunJobInfo] = Field(
+        default_factory=list,
+        description="The system-database rows this run produced.",
+    )
+    has_log: bool = Field(
+        default=False,
+        description="Whether this server can serve the run's output.",
+    )
 
 
 class RunLog(BaseModel):

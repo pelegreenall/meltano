@@ -19,7 +19,7 @@ import typing as t
 from fastapi import HTTPException, Request, status
 
 if t.TYPE_CHECKING:
-    from meltano.ui.context import AppContext
+    from meltano.ui.context import ServerContext
 
 #: Name of the cookie holding the session token.
 TOKEN_COOKIE = "meltano_ui_token"  # noqa: S105
@@ -74,7 +74,7 @@ def extract_token(request: Request) -> str | None:
     return request.query_params.get(TOKEN_QUERY_PARAM)
 
 
-def check_host(request: Request, ctx: AppContext) -> None:
+def check_host(request: Request, ctx: ServerContext) -> None:
     """Reject requests whose ``Host`` header is not an expected value.
 
     Args:
@@ -90,7 +90,7 @@ def check_host(request: Request, ctx: AppContext) -> None:
         raise _forbidden(msg)
 
 
-def check_origin(request: Request, ctx: AppContext) -> None:
+def check_origin(request: Request, ctx: ServerContext) -> None:
     """Reject cross-site requests that attempt to mutate state.
 
     The SPA is served from the same origin as the API, so there is no
@@ -116,7 +116,7 @@ def check_origin(request: Request, ctx: AppContext) -> None:
         raise _forbidden(msg)
 
 
-def check_token(request: Request, ctx: AppContext) -> None:
+def check_token(request: Request, ctx: ServerContext) -> None:
     """Validate the caller's token in constant time.
 
     Args:
@@ -136,7 +136,7 @@ def check_token(request: Request, ctx: AppContext) -> None:
         raise _unauthorized(msg)
 
 
-def check_writable(request: Request, ctx: AppContext) -> None:
+def check_writable(request: Request, ctx: ServerContext) -> None:
     """Refuse mutating requests when the server is read-only.
 
     Args:

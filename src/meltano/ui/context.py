@@ -19,10 +19,76 @@ from meltano.ui.services.project_watch import ProjectWatcher
 from meltano.ui.services.run_manager import RunManager
 
 if t.TYPE_CHECKING:
+    from pathlib import Path
+
+    import uvicorn
     from sqlalchemy.orm import Session, sessionmaker
 
     from meltano.core.project import Project
     from meltano.ui.settings import UIServerSettings
+
+
+@t.runtime_checkable
+class ServerContext(t.Protocol):
+    """What request admission needs, whether or not a project exists.
+
+    The checks in :mod:`meltano.ui.security` apply before a project is even
+    chosen - a server sitting on the setup screen is still an open port - so
+    they are written against this rather than against `AppContext`.
+    """
+
+    settings: UIServerSettings
+
+    @property
+    def readonly(self) -> bool:
+        """Whether mutating requests should be refused."""
+        ...
+
+
+@dataclass(kw_only=True)
+class SetupContext:
+    """Server state for a process that has no project yet.
+
+    Deliberately not an `AppContext` with optional fields: every router in
+    this server dereferences `ctx.project`, and making it nullable would push
+    a narrowing check into thirty call sites to serve one screen. Setup mode
+    mounts its own small app instead.
+    """
+
+    settings: UIServerSettings
+
+    #: Chosen by the setup endpoints, read by the caller once the server has
+    #: stopped. `None` means the user never picked one.
+    project_path: Path | None = field(default=None, init=False)
+
+    #: The running server, so a request handler can ask it to wind down. Set
+    #: by `serve_setup` before it starts serving.
+    server: uvicorn.Server | None = field(default=None, init=False, repr=False)
+
+    @property
+    def readonly(self) -> bool:
+        """Whether mutating requests should be refused.
+
+        A read-only server may not create a project either: doing so writes to
+        the filesystem, which is exactly what the flag forbids.
+
+        Returns:
+            True if no mutation is permitted.
+        """
+        return self.settings.readonly
+
+    def choose(self, path: Path) -> None:
+        """Record the project to serve, and stop the setup server.
+
+        Shutdown is cooperative: uvicorn finishes in-flight requests first, so
+        the response announcing the choice still reaches the browser.
+
+        Args:
+            path: The project's root directory.
+        """
+        self.project_path = path
+        if self.server is not None:
+            self.server.should_exit = True
 
 
 @dataclass(kw_only=True)

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { api } from "../api";
+import type { RunInfo } from "../api";
 import { RunComposer } from "../components/RunComposer";
 import { Empty, ErrorNotice, Loading, StatusBadge } from "../components/Status";
 import { formatDuration, formatWhen } from "../format";
@@ -114,7 +115,7 @@ export function Overview() {
                   <tr key={run.run_id}>
                     <td>
                       <Link className="row-link" to={`/runs/${run.run_id}`}>
-                        {pipelineOf(run.argv)}
+                        {pipelineOf(run)}
                       </Link>
                     </td>
                     <td>
@@ -135,9 +136,59 @@ export function Overview() {
   );
 }
 
-/** Recover the block names from a stored argv for display. */
-export function pipelineOf(argv: string[]): string {
-  const blocks = argv.slice(argv.findIndex((arg) => arg === "run") + 1);
-  const names = blocks.filter((arg) => !arg.startsWith("--"));
-  return names.length > 0 ? names.join(" → ") : "pipeline";
+/**
+ * Recover the block names from a state ID.
+ *
+ * `generate_state_id` builds these as `{environment}:{tap}-to-{target}` with
+ * an optional trailing suffix component, so the middle component carries the
+ * names. A state ID that does not follow the shape is returned unchanged
+ * rather than mangled.
+ */
+function blocksOfStateId(stateId: string): string {
+  const components = stateId.split(":");
+  const pair = components.length > 1 ? components[1] : components[0];
+
+  // Split on the first `-to-`: core joins the two names with it, so a plugin
+  // whose own name contains `-to-` is inherently ambiguous either way.
+  const at = pair.indexOf("-to-");
+  if (at === -1) return pair;
+  return `${pair.slice(0, at)} → ${pair.slice(at + 4)}`;
+}
+
+/** The plugin names following a subcommand, ignoring its flags. */
+function argsAfter(argv: string[], token: string): string[] {
+  const at = argv.indexOf(token);
+  if (at === -1) return [];
+  return argv.slice(at + 1).filter((arg) => !arg.startsWith("--"));
+}
+
+/**
+ * Name a run for display.
+ *
+ * Not every supervised task is a pipeline: installing and testing a plugin go
+ * through the same machinery, and naming them from their blocks would render
+ * the interpreter's own argv. Runs known only from the system database have no
+ * argv at all, so their name is recovered from the state IDs of the rows they
+ * produced - in the same shape, so one pipeline does not read differently
+ * depending on who started it.
+ */
+export function pipelineOf(
+  run: Pick<RunInfo, "argv" | "jobs" | "kind">,
+): string {
+  if (run.kind === "install") {
+    const names = argsAfter(run.argv, "install");
+    return names.length > 0 ? `Install ${names.join(" ")}` : "Install";
+  }
+
+  if (run.kind === "test") {
+    // `config --plugin-type=... test <name>`, so the name follows "test".
+    const names = argsAfter(run.argv, "test");
+    return names.length > 0 ? `Test ${names.join(" ")}` : "Test connection";
+  }
+
+  const names = argsAfter(run.argv, "run");
+  if (names.length > 0) return names.join(" → ");
+
+  const fromState = run.jobs.map((job) => blocksOfStateId(job.job_name));
+  return fromState.length > 0 ? fromState.join(", ") : "pipeline";
 }

@@ -46,6 +46,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** An existing project the setup server found nearby. */
+export interface ProjectCandidate {
+  path: string;
+  name: string;
+}
+
+/** What a projectless server reports. Absent once a project is being served. */
+export interface SetupState {
+  cwd: string;
+  candidates: ProjectCandidate[];
+  readonly: boolean;
+}
+
+export interface SetupResult {
+  path: string;
+  created: boolean;
+  detail: string;
+}
+
 export interface ServerMeta {
   meltano_version: string;
   project_root: string;
@@ -79,17 +98,140 @@ export type RunStatus =
   | "cancelled"
   | "unknown";
 
+/** One `Job` row a run produced. A run has several when it has several blocks. */
+export interface RunJobInfo {
+  job_name: string;
+  state: string;
+  started_at: string | null;
+  ended_at: string | null;
+  trigger: string | null;
+}
+
 export interface RunInfo {
   run_id: string;
   kind: string;
   status: RunStatus;
-  argv: string[];
   started_at: string;
-  log_path: string;
+  /** Empty for runs this server did not launch. */
+  argv: string[];
+  /** Null for runs this server did not launch. */
+  log_path: string | null;
   environment: string | null;
   pid: number | null;
   finished_at: string | null;
   exit_code: number | null;
+  /** The system-database rows this run produced. */
+  jobs: RunJobInfo[];
+  /** Whether this server can serve the run's output. */
+  has_log: boolean;
+}
+
+/** A named job declared in `meltano.yml`. Not a `Job` row - see `RunJobInfo`. */
+export interface JobInfo {
+  name: string;
+  tasks: (string | string[])[];
+  blocks: string[];
+}
+
+/** One packaging of a Hub plugin. */
+export interface HubVariant {
+  name: string;
+  is_default: boolean;
+}
+
+/** A plugin listed on Meltano Hub. */
+export interface HubPlugin {
+  name: string;
+  plugin_type: string;
+  default_variant: string;
+  variants: HubVariant[];
+  logo_url: string | null;
+  is_added: boolean;
+}
+
+/** The outcome of adding a Hub plugin to the project. */
+export interface AddedPlugin {
+  name: string;
+  type: string;
+  variant: string | null;
+  pip_url: string | null;
+  /** The install task, when one was started. */
+  run_id: string | null;
+}
+
+/** One select pattern, parsed. */
+export interface SelectPatternInfo {
+  raw: string;
+  stream_pattern: string;
+  property_pattern: string | null;
+  negated: boolean;
+  /** False for Meltano's default or an inherited pattern: nothing to delete. */
+  removable: boolean;
+}
+
+/** The select patterns in effect for an extractor. Read from `meltano.yml`. */
+export interface SelectPatterns {
+  extractor: string;
+  patterns: SelectPatternInfo[];
+  environment: string | null;
+}
+
+export interface SelectedProperty {
+  name: string;
+  /** Effective selection: the stream's combined with the property's own. */
+  selection: string;
+}
+
+export interface SelectedStream {
+  name: string;
+  selection: string;
+  properties: SelectedProperty[];
+}
+
+/** What an extractor reports it can produce. Requires running it. */
+export interface SelectCatalog {
+  extractor: string;
+  streams: SelectedStream[];
+  patterns: SelectPatternInfo[];
+  selection_types: string[];
+}
+
+/** One state ID's bookmarks, without the payload. */
+export interface StateSummary {
+  state_id: string;
+  has_state: boolean;
+  streams: string[];
+}
+
+/** One state ID and the payload a run would resume from. */
+export interface StateDetail {
+  state_id: string;
+  state: Record<string, unknown>;
+  streams: string[];
+}
+
+/**
+ * A schedule declared in `meltano.yml`.
+ *
+ * Meltano declares schedules; an orchestrator (Airflow, Dagster, cron) is what
+ * fires them. Nothing in this server runs them on a timer.
+ */
+export interface ScheduleInfo {
+  name: string;
+  kind: "job" | "elt";
+  /** As declared: a cron expression or an alias like `@daily`. */
+  interval: string | null;
+  /** Null when the schedule never fires on its own (`@manual`, `@once`, `@none`). */
+  cron_interval: string | null;
+  env: Record<string, string>;
+  job: string | null;
+  extractor: string | null;
+  loader: string | null;
+  transform: string | null;
+  /** Only `elt` schedules record this; always null for `job` schedules. */
+  last_successful_run_at: string | null;
+  /** False for legacy `elt` schedules, which must be run from the CLI. */
+  can_run: boolean;
 }
 
 export interface StartRunBody {
@@ -109,6 +251,104 @@ export const api = {
   startRun: (body: StartRunBody) =>
     request<RunInfo>("/runs", { method: "POST", body: JSON.stringify(body) }),
   cancelRun: (id: string) => request<RunInfo>(`/runs/${id}`, { method: "DELETE" }),
+  jobs: () => request<JobInfo[]>("/jobs"),
+  job: (name: string) => request<JobInfo>(`/jobs/${name}`),
+  createJob: (body: { name: string; tasks: (string | string[])[] }) =>
+    request<JobInfo>("/jobs", { method: "POST", body: JSON.stringify(body) }),
+  updateJob: (name: string, body: { tasks: (string | string[])[] }) =>
+    request<JobInfo>(`/jobs/${name}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteJob: (name: string) =>
+    request<void>(`/jobs/${name}`, { method: "DELETE" }),
+  schedules: () => request<ScheduleInfo[]>("/schedules"),
+  createSchedule: (body: { name: string; job: string; interval: string }) =>
+    request<ScheduleInfo>("/schedules", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateSchedule: (
+    name: string,
+    body: { interval?: string; job?: string },
+  ) =>
+    request<ScheduleInfo>(`/schedules/${name}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteSchedule: (name: string) =>
+    request<void>(`/schedules/${name}`, { method: "DELETE" }),
+  runSchedule: (name: string) =>
+    request<RunInfo>(`/schedules/${name}/run`, { method: "POST" }),
+  state: (pattern?: string) =>
+    request<StateSummary[]>(
+      pattern ? `/state?pattern=${encodeURIComponent(pattern)}` : "/state",
+    ),
+  // State IDs contain ':' separators, so every one of these encodes the id
+  // rather than interpolating it raw.
+  stateDetail: (stateId: string) =>
+    request<StateDetail>(`/state/${encodeURIComponent(stateId)}`),
+  setState: (stateId: string, state: Record<string, unknown>) =>
+    request<StateDetail>(`/state/${encodeURIComponent(stateId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ state }),
+    }),
+  clearState: (stateId: string) =>
+    request<void>(`/state/${encodeURIComponent(stateId)}`, { method: "DELETE" }),
+  select: (type: string, name: string) =>
+    request<SelectPatterns>(`/plugins/${type}/${name}/select`),
+  // Runs the extractor in discovery mode, so this can be slow or fail in ways
+  // the pattern endpoints never do.
+  selectCatalog: (type: string, name: string, refresh = false) =>
+    request<SelectCatalog>(
+      `/plugins/${type}/${name}/select/catalog${refresh ? "?refresh=true" : ""}`,
+    ),
+  addSelectPattern: (
+    type: string,
+    name: string,
+    body: { streams: string; properties: string; exclude?: boolean },
+  ) =>
+    request<SelectPatterns>(`/plugins/${type}/${name}/select`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  removeSelectPattern: (type: string, name: string, pattern: string) =>
+    request<SelectPatterns>(
+      `/plugins/${type}/${name}/select/${encodeURIComponent(pattern)}`,
+      { method: "DELETE" },
+    ),
+  clearSelectPatterns: (type: string, name: string) =>
+    request<SelectPatterns>(`/plugins/${type}/${name}/select`, {
+      method: "DELETE",
+    }),
+  // Reaches out to Hub, so this can be slow or fail where the rest cannot.
+  hub: (type: string, q?: string) =>
+    request<HubPlugin[]>(
+      q ? `/hub/${type}?q=${encodeURIComponent(q)}` : `/hub/${type}`,
+    ),
+  addPlugin: (body: {
+    plugin_type: string;
+    name: string;
+    variant?: string;
+    install?: boolean;
+  }) =>
+    request<AddedPlugin>("/plugins", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Only a projectless server answers these; a serving one 404s, which is how
+  // the app decides which of its two faces to show.
+  setupState: () => request<SetupState>("/setup"),
+  createProject: (body: { path: string; force?: boolean }) =>
+    request<SetupResult>("/setup/create", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  openProject: (path: string) =>
+    request<SetupResult>("/setup/open", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
 };
 
 export const runEventsUrl = (id: string) => `${BASE}/runs/${id}/events`;
@@ -203,5 +443,24 @@ export const configApi = {
   unset: (type: string, name: string, setting: string) =>
     request<SetSettingResponse>(`/plugins/${type}/${name}/config/${setting}`, {
       method: "DELETE",
+    }),
+};
+
+export interface PluginTaskAccepted {
+  run_id: string;
+  kind: string;
+  warning: string | null;
+}
+
+export const pluginTasks = {
+  install: (type: string, name: string, clean = false) =>
+    request<PluginTaskAccepted>(`/plugins/${type}/${name}/install`, {
+      method: "POST",
+      body: JSON.stringify({ clean }),
+    }),
+  test: (type: string, name: string) =>
+    request<PluginTaskAccepted>(`/plugins/${type}/${name}/test`, {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
 };
