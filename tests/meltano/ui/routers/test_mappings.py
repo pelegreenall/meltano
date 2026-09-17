@@ -236,6 +236,38 @@ class TestSaveMapping:
         assert "No mapper named" in response.json()["detail"]
 
 
+@pytest.mark.usefixtures("mapper")
+class TestMapperStatus:
+    """Whether a saved mapping would actually be applied by a run."""
+
+    def test_reports_the_mapper_and_that_it_is_not_installed(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """Declared and installed are different states.
+
+        Saving a mapping writes config; a run only honours it once the mapper
+        has a virtualenv, so the UI has to be able to tell the two apart.
+        """
+        body = ui_client.get(f"{MAPPINGS}/mapper").json()
+
+        assert body["name"] == "test-mapper"
+        assert body["is_installed"] is False
+
+    def test_mapper_is_not_read_as_a_mapping_name(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """`/mappings/mapper` is a literal route, not a mapping called "mapper".
+
+        Route order decides this, so it is worth pinning.
+        """
+        response = ui_client.get(f"{MAPPINGS}/mapper")
+
+        assert response.status_code == 200
+        assert "suggested" in response.json()
+
+
 class TestWithoutAMapper:
     """What happens in a project that has no mapper at all."""
 
@@ -259,6 +291,14 @@ class TestWithoutAMapper:
     ) -> None:
         """No mapper simply means no mappings."""
         assert ui_client.get(MAPPINGS).json() == []
+
+    def test_status_names_the_mapper_to_add(self, ui_client: TestClient) -> None:
+        """The UI offers to add it, so it needs to know which one."""
+        body = ui_client.get(f"{MAPPINGS}/mapper").json()
+
+        assert body["name"] is None
+        assert body["is_installed"] is False
+        assert body["suggested"] == "meltano-map-transformer"
 
 
 @pytest.mark.usefixtures("mapper")

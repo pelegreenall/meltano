@@ -1,7 +1,12 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, type PreviewResponse, type TransformStep } from "../api";
+import {
+  api,
+  pluginTasks,
+  type PreviewResponse,
+  type TransformStep,
+} from "../api";
 import { ErrorNotice, Loading } from "./Status";
 
 /** Step kinds, in the order someone reaches for them. */
@@ -231,6 +236,14 @@ export function DataShaper({
   const [result, setResult] = useState<PreviewResponse | null>(null);
   const [limit, setLimit] = useState(20);
   const [mappingName, setMappingName] = useState("");
+  const queryClient = useQueryClient();
+
+  // Saving writes config; a run only honours it once a mapper is present
+  // and installed, so the two states are surfaced separately.
+  const mapper = useQuery({
+    queryKey: ["mapper-status"],
+    queryFn: api.mapperStatus,
+  });
 
   const run = useMutation({
     mutationFn: (next: TransformStep[]) =>
@@ -246,6 +259,28 @@ export function DataShaper({
         steps,
         overwrite: true,
       }),
+  });
+
+  // Two different shortfalls with one control: a mapper that is missing needs
+  // adding, one that is declared but has no virtualenv only needs installing.
+  // Both end in a supervised task, so only its run is carried forward.
+  const installMapper = useMutation<{ run_id: string | null }>({
+    mutationFn: async () => {
+      if (mapper.data?.name) {
+        const task = await pluginTasks.install("mappers", mapper.data.name);
+        return { run_id: task.run_id };
+      }
+      const added = await api.addPlugin({
+        plugin_type: "mappers",
+        name: mapper.data?.suggested ?? "meltano-map-transformer",
+      });
+      return { run_id: added.run_id };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["mapper-status"] });
+      queryClient.invalidateQueries({ queryKey: ["plugins"] });
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
   });
 
   // Every edit re-runs the preview, which is what makes this a loop rather
@@ -461,6 +496,36 @@ export function DataShaper({
                   {save.isPending ? "Saving…" : "Save mapping"}
                 </button>
               </div>
+
+              {mapper.data && !mapper.data.is_installed && (
+                <div className="notice" role="status">
+                  <div>
+                    {mapper.data.name
+                      ? `${mapper.data.name} is declared but not installed.`
+                      : "This project has no mapper plugin."}{" "}
+                    A run will not apply a mapping until it is installed.
+                  </div>
+                  <div className="notice-instruction">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => installMapper.mutate()}
+                      disabled={installMapper.isPending}
+                      style={{ marginTop: "var(--s2)" }}
+                    >
+                      {installMapper.isPending
+                        ? "Installing…"
+                        : mapper.data.name
+                          ? `Install ${mapper.data.name}`
+                          : `Add and install ${mapper.data.suggested}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {installMapper.isError && (
+                <ErrorNotice error={installMapper.error} />
+              )}
 
               {save.isSuccess && (
                 <div className="notice notice-info" role="status">

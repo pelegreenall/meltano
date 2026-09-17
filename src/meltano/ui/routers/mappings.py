@@ -20,7 +20,11 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from meltano.core.plugin import PluginType
 from meltano.ui.deps import CtxDep, require_auth
 from meltano.ui.errors import HTTP_422_UNPROCESSABLE
-from meltano.ui.schemas.mappings import MappingInfo, SaveMappingRequest
+from meltano.ui.schemas.mappings import (
+    MapperStatus,
+    MappingInfo,
+    SaveMappingRequest,
+)
 from meltano.ui.services.transforms import TransformError, compile_steps
 
 if t.TYPE_CHECKING:
@@ -67,6 +71,38 @@ def _entries(mapper: ProjectPlugin) -> list[dict[str, t.Any]]:
     """
     entries = mapper.extras.get("mappings") or []
     return [dict(entry) for entry in entries]
+
+
+@router.get("/mappings/mapper", response_model=MapperStatus)
+def mapper_status(ctx: CtxDep) -> MapperStatus:
+    """Report whether a mapping saved here would actually be applied.
+
+    Registered before `/mappings/{name}` would be: a literal path has to win
+    over a parameterised one, or "mapper" reads as a mapping's name.
+
+    Args:
+        ctx: The application context.
+
+    Returns:
+        The mapper that would carry a mapping, and whether it is installed.
+    """
+    mappers = _mappers(ctx)
+    if not mappers:
+        return MapperStatus(name=None, is_installed=False, suggested=DEFAULT_MAPPER)
+
+    mapper = mappers[0]
+    # The interpreter is the evidence of an install, as it is on the plugin
+    # inventory: `meltano add --no-install` leaves a directory without one.
+    venv = ctx.project.dirs.plugin(mapper, "venv", make_dirs=False)
+    installed = (venv / "bin" / "python").exists() or (
+        venv / "Scripts" / "python.exe"
+    ).exists()
+
+    return MapperStatus(
+        name=mapper.name,
+        is_installed=installed,
+        suggested=DEFAULT_MAPPER,
+    )
 
 
 @router.get("/mappings", response_model=list[MappingInfo])

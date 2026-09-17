@@ -31,6 +31,26 @@ class MappingInfo(BaseModel):
     )
 
 
+class MapperStatus(BaseModel):
+    """Whether this project can actually apply a mapping.
+
+    Saving a mapping writes config; a run only honours it if a mapper plugin
+    is present *and* installed. The two are separate states, and the UI has to
+    tell them apart to offer the right next step.
+    """
+
+    name: str | None = Field(
+        default=None,
+        description="The mapper that would carry a new mapping, if any.",
+    )
+    is_installed: bool = Field(
+        description="False when the plugin is declared but has no virtualenv.",
+    )
+    suggested: str = Field(
+        description="The mapper to add when the project has none.",
+    )
+
+
 class SaveMappingRequest(BaseModel):
     """A request to store a step list as a mapping.
 

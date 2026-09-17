@@ -167,6 +167,13 @@ export interface PreviewResponse {
   stream_map: Record<string, unknown>;
 }
 
+/** Whether a saved mapping would actually be applied by a run. */
+export interface MapperStatus {
+  name: string | null;
+  is_installed: boolean;
+  suggested: string;
+}
+
 /** A named mapping stored under a mapper plugin. */
 export interface MappingInfo {
   name: string;
@@ -403,6 +410,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   mappings: () => request<MappingInfo[]>("/mappings"),
+  mapperStatus: () => request<MapperStatus>("/mappings/mapper"),
   // Compiles the steps server-side, so what is saved is what the preview showed.
   saveMapping: (body: {
     name: string;
