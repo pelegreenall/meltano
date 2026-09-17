@@ -22,3 +22,23 @@ class PluginInfo(BaseModel):
     is_installed: bool = Field(
         description="Whether the plugin's virtual environment exists on disk.",
     )
+
+
+class PluginTaskRequest(BaseModel):
+    """Options for a plugin-scoped background task."""
+
+    clean: bool = Field(
+        default=False,
+        description="Reinstall from scratch rather than upgrading in place.",
+    )
+
+
+class PluginTaskAccepted(BaseModel):
+    """A started task the caller can follow on the runs stream."""
+
+    run_id: str
+    kind: str
+    warning: str | None = Field(
+        default=None,
+        description="Something the user should know about what this task does.",
+    )

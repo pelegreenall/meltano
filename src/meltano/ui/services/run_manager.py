@@ -274,6 +274,60 @@ class RunManager:
         argv.extend(blocks)
         return argv
 
+    def build_install_argv(
+        self,
+        plugin_type: str,
+        name: str,
+        *,
+        environment: str | None = None,
+        clean: bool = False,
+    ) -> list[str]:
+        """Build the argv for installing one plugin.
+
+        Args:
+            plugin_type: Plural plugin type, e.g. "extractors".
+            name: The plugin's name.
+            environment: Meltano environment to run in.
+            clean: Whether to reinstall from scratch.
+
+        Returns:
+            The complete argv.
+        """
+        argv = [
+            *self._base_argv(environment),
+            "install",
+            f"--plugin-type={plugin_type}",
+        ]
+        if clean:
+            argv.append("--clean")
+        argv.append(name)
+        return argv
+
+    def build_test_argv(
+        self,
+        plugin_type: str,
+        name: str,
+        *,
+        environment: str | None = None,
+    ) -> list[str]:
+        """Build the argv for testing a plugin's configuration.
+
+        Args:
+            plugin_type: Plural plugin type, e.g. "extractors".
+            name: The plugin's name.
+            environment: Meltano environment to run in.
+
+        Returns:
+            The complete argv.
+        """
+        return [
+            *self._base_argv(environment),
+            "config",
+            f"--plugin-type={plugin_type}",
+            "test",
+            name,
+        ]
+
     # -- Lifecycle ---------------------------------------------------------
 
     async def start(

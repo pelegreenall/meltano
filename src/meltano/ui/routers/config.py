@@ -42,7 +42,7 @@ router = APIRouter(tags=["config"], dependencies=[Depends(require_auth)])
 _UNSET_SOURCES = frozenset({"default", "inherited"})
 
 
-def _resolve(project: Project, plugin_type: str, name: str) -> ProjectPlugin:
+def resolve_plugin(project: Project, plugin_type: str, name: str) -> ProjectPlugin:
     """Look up a plugin by its URL segments.
 
     Args:
@@ -133,7 +133,7 @@ def read_config(plugin_type: str, name: str, ctx: CtxDep) -> PluginConfig:
     Returns:
         The plugin's settings and their current values.
     """
-    plugin = _resolve(ctx.project, plugin_type, name)
+    plugin = resolve_plugin(ctx.project, plugin_type, name)
     service = _settings_service(ctx, plugin)
 
     metadata = service.config_with_metadata(redacted=True)
@@ -176,7 +176,7 @@ async def set_setting(
     Returns:
         The write's outcome, with the value redacted when sensitive.
     """
-    plugin = _resolve(ctx.project, plugin_type, name)
+    plugin = resolve_plugin(ctx.project, plugin_type, name)
     service = _settings_service(ctx, plugin)
 
     def write() -> tuple[t.Any, dict[str, t.Any]]:
@@ -215,7 +215,7 @@ async def unset_setting(
     Returns:
         The setting's state after removal.
     """
-    plugin = _resolve(ctx.project, plugin_type, name)
+    plugin = resolve_plugin(ctx.project, plugin_type, name)
     service = _settings_service(ctx, plugin)
 
     def write() -> dict[str, t.Any]:
