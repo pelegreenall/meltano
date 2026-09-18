@@ -10,11 +10,18 @@ are the smallest programs that speak the protocol honestly, which keeps the
 test free of a network round trip, a virtualenv build, and any dependency on a
 connector staying published. What is under test is Meltano's ELT machinery and
 this server's control of it, not a third-party plugin.
+
+The exception is the mapper, which cannot be faked: whether the stream maps
+this server compiles are the dialect `meltano-map-transformer` actually speaks
+is a question only the real mapper can answer. Those tests skip unless it is on
+`PATH`, so a plain run of this suite still owes nothing to pip.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import shutil
 import sys
 import time
 import typing as t
@@ -24,6 +31,7 @@ import pytest
 from meltano.core.job import Job
 from meltano.core.plugin import PluginType
 from meltano.core.plugin.project_plugin import ProjectPlugin
+from meltano.core.project_plugins_service import PluginAlreadyAddedException
 
 if t.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -37,6 +45,11 @@ if t.TYPE_CHECKING:
 #: A run of two records should take well under a second; this is the ceiling
 #: before the test gives up and reports what it saw.
 _RUN_TIMEOUT_SECONDS = 60
+
+#: The console script `meltano-map-transform` installs. Everything about the
+#: mapper chain that this server cannot control lives behind this name: whether
+#: the stream maps it compiles are the dialect the real mapper speaks.
+_MAPPER_EXECUTABLE = "meltano-map-transform"
 
 #: Emits one stream, two records, and a bookmark. Deliberately not a full tap:
 #: no discovery, no catalog, no state reading.
@@ -386,3 +399,160 @@ class TestPipelineEndToEnd:
             assert singer_pipeline.read_text().strip()
         finally:
             ui_client.delete("/api/v1/jobs/widgets-nightly")
+
+
+@pytest.fixture
+def real_mapper(project: Project) -> Iterator[ProjectPlugin]:
+    """Declare the actual `meltano-map-transformer` in the project.
+
+    Skips unless its console script is on `PATH`. Installing it here instead
+    would make every run of this suite depend on pip and on a third-party
+    plugin staying published, which is too much to ask of a unit test run; the
+    mapper is opted into with `uv pip install meltano-map-transform`.
+
+    It is declared with an `executable` and no `pip_url`, so Meltano invokes
+    the script that is already there rather than building a venv for it.
+
+    Args:
+        project: The test project.
+
+    Yields:
+        The mapper plugin.
+    """
+    executable = shutil.which(_MAPPER_EXECUTABLE)
+    if executable is None:
+        pytest.skip(
+            f"{_MAPPER_EXECUTABLE} is not on PATH; "
+            "install `meltano-map-transform` to run the mapper tests",
+        )
+
+    plugin = ProjectPlugin(
+        PluginType.MAPPERS,
+        "meltano-map-transformer",
+        namespace="meltano_map_transformer",
+        executable=executable,
+    )
+    # Added once for the class-scoped project and left in place: removing and
+    # re-adding it per test fights the plugin cache, which still reports a
+    # mapper the file no longer has. Emptying its mappings is isolation enough.
+    with contextlib.suppress(PluginAlreadyAddedException):
+        project.plugins.add_to_file(plugin)
+
+    _clear_mappings(project, plugin.name)
+    try:
+        yield plugin
+    finally:
+        _clear_mappings(project, plugin.name)
+
+
+def _clear_mappings(project: Project, mapper_name: str) -> None:
+    """Empty a mapper's saved mappings.
+
+    Args:
+        project: The test project.
+        mapper_name: The mapper to reset.
+    """
+    with project.config_service.update_meltano_yml() as meltano_yml:
+        for plugin in meltano_yml["plugins"]["mappers"]:
+            if plugin.name == mapper_name and not plugin.is_mapping():
+                plugin.extras["mappings"] = []
+                return
+
+
+def _rows(path: Path) -> list[dict[str, t.Any]]:
+    """Read back what the loader wrote.
+
+    Args:
+        path: The loader's output file.
+
+    Returns:
+        One dict per record, in the order they arrived.
+    """
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("singer_pipeline", "real_mapper")
+class TestMappingAppliedByARealMapper:
+    """The one claim this server cannot make on its own.
+
+    Everything else about mappings is checked against what lands in
+    `meltano.yml`, which proves only that the file says what we meant to say.
+    Whether `meltano-map-transformer` reads those stream maps the way the
+    compiler assumes is a contract with someone else's code, and the only way
+    to find out is to put records through it.
+    """
+
+    #: Renames a column, drops the one it came from, and filters a record out.
+    #: Between them these exercise every construct the compiler emits: an
+    #: expression, a `null`, and a `__filter__`.
+    STEPS: t.ClassVar[list[dict[str, t.Any]]] = [
+        {"kind": "rename", "column": "name", "to": "label"},
+        {"kind": "filter", "column": "id", "operator": "gt", "value": 1},
+    ]
+
+    def _save(self, client: TestClient, name: str) -> None:
+        """Save the steps as a named mapping.
+
+        Args:
+            client: The authenticated client.
+            name: The mapping's name.
+        """
+        response = client.post(
+            "/api/v1/mappings",
+            json={"name": name, "stream": "widgets", "steps": self.STEPS},
+        )
+        assert response.status_code == 201, response.text
+
+    def test_a_saved_mapping_shapes_the_records_a_run_loads(
+        self,
+        ui_client: TestClient,
+        singer_pipeline: Path,
+    ) -> None:
+        """A mapping saved over HTTP changes what reaches the loader.
+
+        Without the mapper in the middle this pipeline loads two records with
+        `id` and `name`; the assertion below is only reachable if the real
+        mapper understood the compiled stream map.
+        """
+        self._save(ui_client, "shape-widgets")
+
+        started = ui_client.post(
+            "/api/v1/runs",
+            json={"blocks": ["fake-tap", "shape-widgets", "fake-target"]},
+        )
+        assert started.status_code == 202
+
+        run = _await_run(ui_client, started.json()["run_id"])
+        assert run["status"] == "success", run
+
+        assert _rows(singer_pipeline) == [{"id": 2, "label": "beta"}]
+
+    def test_the_preview_agrees_with_the_run(
+        self,
+        ui_client: TestClient,
+        singer_pipeline: Path,
+    ) -> None:
+        """What the shaper showed is what the pipeline produces.
+
+        The preview applies the steps in this process, in Python; the run
+        applies them in the mapper, from a compiled stream map. Two
+        implementations of the same steps that agree by construction on
+        nothing, compared against each other on real records - a divergence
+        here is the failure the whole feature would be judged by.
+        """
+        preview = ui_client.post(
+            "/api/v1/plugins/extractors/fake-tap/preview",
+            json={"stream": "widgets", "steps": self.STEPS},
+        )
+        assert preview.status_code == 200, preview.text
+
+        self._save(ui_client, "agreeing-widgets")
+        started = ui_client.post(
+            "/api/v1/runs",
+            json={"blocks": ["fake-tap", "agreeing-widgets", "fake-target"]},
+        )
+        run = _await_run(ui_client, started.json()["run_id"])
+        assert run["status"] == "success", run
+
+        assert _rows(singer_pipeline) == preview.json()["rows"]

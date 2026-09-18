@@ -67,7 +67,16 @@ def validate_blocks(project: Project, blocks: Sequence[str]) -> None:
     Raises:
         UnknownBlockError: If any name is unrecognized.
     """
-    known = {plugin.name for plugin in project.plugins.plugins()}
+    known = set()
+    for plugin in project.plugins.plugins():
+        known.add(plugin.name)
+        # A mapping is a runnable block under its own name, but the synthetic
+        # plugin Meltano expands it into is named after the mapper carrying
+        # it. Taking only `plugin.name` would refuse every `tap mapping
+        # target` run, which is the only reason to save a mapping at all.
+        if plugin.is_mapping():
+            known.add(plugin.extra_config["_mapping_name"])
+
     known.update(
         task_set.name for task_set in TaskSetsService(project).list_task_sets()
     )

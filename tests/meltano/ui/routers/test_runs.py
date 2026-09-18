@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import typing as t
 import uuid
 from unittest import mock
@@ -9,6 +10,9 @@ from unittest import mock
 import pytest
 
 from meltano.core.job import State
+from meltano.core.plugin import PluginType
+from meltano.core.plugin.project_plugin import ProjectPlugin
+from meltano.core.project_plugins_service import PluginAlreadyAddedException
 from meltano.ui.routers.runs import UnknownBlockError, validate_blocks
 from meltano.ui.services.run_manager import RunKind, RunRecord, RunStatus
 from tests.meltano.ui.services.test_run_history import make_job
@@ -17,7 +21,6 @@ if t.TYPE_CHECKING:
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import Session
 
-    from meltano.core.plugin.project_plugin import ProjectPlugin
     from meltano.core.project import Project
     from meltano.ui.context import AppContext
 
@@ -73,6 +76,29 @@ class TestValidateBlocks:
     ) -> None:
         """`plugin:command` is resolved against the plugin name."""
         validate_blocks(project, [f"{tap.name}:some-command"])
+
+    def test_accepts_a_mapping_name(self, project: Project) -> None:
+        """`meltano run tap my-mapping target` has to get past this guard.
+
+        A mapping is runnable under its own name, but Meltano expands it into
+        a synthetic plugin named after the mapper that carries it - so a check
+        that looked only at plugin names refused every mapping ever saved,
+        which is the only thing saving one is for.
+        """
+        mapper = ProjectPlugin(
+            PluginType.MAPPERS,
+            "test-mapper",
+            namespace="test_mapper",
+            executable="test-mapper",
+            mappings=[{"name": "tidy", "config": {"stream_maps": {}}}],
+        )
+        with contextlib.suppress(PluginAlreadyAddedException):
+            project.plugins.add_to_file(mapper)
+
+        try:
+            validate_blocks(project, ["tidy"])
+        finally:
+            project.plugins.remove_from_file(mapper)
 
 
 class TestRunEndpoints:
