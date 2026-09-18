@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { api, configApi, type SettingInfo } from "../api";
 import { PluginActions } from "../components/PluginActions";
+import { PluginCommands } from "../components/PluginCommands";
 import { DataShaper } from "../components/DataShaper";
 import { SelectEditor } from "../components/SelectEditor";
 import { ErrorNotice, Loading } from "../components/Status";
@@ -119,6 +120,12 @@ export function PluginDetail() {
           </div>
         )}
       </div>
+
+      <PluginCommands
+        pluginType={pluginType}
+        name={name}
+        isInstalled={isInstalled}
+      />
 
       {config.data!.type === "extractors" && (
         <>

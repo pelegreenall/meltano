@@ -8,6 +8,7 @@ from meltano.core.plugin import PluginType
 from meltano.ui.deps import CtxDep, require_auth
 from meltano.ui.routers.config import resolve_plugin
 from meltano.ui.schemas.plugins import (
+    PluginCommand,
     PluginInfo,
     PluginTaskAccepted,
     PluginTaskRequest,
@@ -49,6 +50,49 @@ def list_plugins(ctx: CtxDep) -> list[PluginInfo]:
         )
 
     return sorted(plugins, key=lambda item: (item.type, item.name))
+
+
+@router.get(
+    "/plugins/{plugin_type}/{name}/commands",
+    response_model=list[PluginCommand],
+)
+def list_plugin_commands(
+    plugin_type: str,
+    name: str,
+    ctx: CtxDep,
+) -> list[PluginCommand]:
+    """List the commands a plugin declares.
+
+    This is what makes a transformer reachable from the browser. `meltano run`
+    takes a block spelled `plugin:command`, so a plugin that declares `run`,
+    `test` and `build` - dbt does - offers three pipeline steps rather than
+    one, and there is no other way to discover them from the API.
+
+    Args:
+        plugin_type: Plural plugin type from the path.
+        name: The plugin's name.
+        ctx: The application context.
+
+    Returns:
+        The commands, ordered by name. Empty for the many plugins that
+        declare none.
+    """
+    plugin = resolve_plugin(ctx.project, plugin_type, name)
+    return sorted(
+        (
+            PluginCommand(
+                name=command_name,
+                description=command.description,
+                # Inherited from the plugin's Hub definition, so this is the
+                # argv a run would actually pass - worth showing, because
+                # `docs-generate` running `docs generate` is not obvious.
+                args=command.args or "",
+                block=f"{plugin.name}:{command_name}",
+            )
+            for command_name, command in plugin.all_commands.items()
+        ),
+        key=lambda command: command.name,
+    )
 
 
 #: `LoaderTestService` writes a real row into the destination, so the UI must

@@ -24,6 +24,28 @@ class PluginInfo(BaseModel):
     )
 
 
+class PluginCommand(BaseModel):
+    """A named command a plugin declares.
+
+    Commands are how a plugin exposes more than one thing it can do - dbt's
+    `run`, `test` and `build`, for instance. Each is runnable as a pipeline
+    block spelled `plugin:command`.
+    """
+
+    name: str
+    description: str | None = Field(
+        default=None,
+        description="What the command does, from the plugin definition.",
+    )
+    args: str = Field(
+        default="",
+        description="The arguments it passes to the plugin's executable.",
+    )
+    block: str = Field(
+        description="The block name that runs it, e.g. 'dbt-postgres:run'.",
+    )
+
+
 class PluginTaskRequest(BaseModel):
     """Options for a plugin-scoped background task."""
 

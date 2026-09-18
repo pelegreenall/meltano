@@ -476,12 +476,33 @@ interface RawLogPayload {
  * Meltano runs with `--log-format=json`, and core configures Singer SDK
  * plugins to emit structured JSON too, so most lines carry real fields rather
  * than prose. Plain lines still arrive and are passed through. */
+/**
+ * ANSI escape sequences, which plugins emit when they think they are talking
+ * to a terminal.
+ *
+ * Matches the whole CSI family rather than colour alone, since a plugin that
+ * colours output tends to move the cursor too.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+/** Render plugin output as text rather than as terminal instructions.
+ *
+ * dbt colours its logs, so without this a run reads
+ * `[0m07:39:25  Running with dbt=1.12.5`. The server stores what the plugin
+ * actually wrote, which is the right thing for a log file on disk; deciding
+ * how to display it belongs here.
+ */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI, "");
+}
+
 export function toLogRecord(id: number, payload: RawLogPayload): LogRecord {
   const metricInfo = payload.metric_info;
   return {
     id,
     structured: Boolean(payload.structured),
-    message: payload.event ?? payload.message ?? "",
+    message: stripAnsi(payload.event ?? payload.message ?? ""),
     level: (payload.level ?? "info").toLowerCase(),
     timestamp: payload.timestamp ?? null,
     stream: payload.stream_name ?? null,
@@ -538,6 +559,14 @@ export const configApi = {
     }),
 };
 
+/** A command a plugin declares, runnable as the block `plugin:command`. */
+export interface PluginCommand {
+  name: string;
+  description: string | null;
+  args: string;
+  block: string;
+}
+
 export interface PluginTaskAccepted {
   run_id: string;
   kind: string;
@@ -545,6 +574,8 @@ export interface PluginTaskAccepted {
 }
 
 export const pluginTasks = {
+  commands: (type: string, name: string) =>
+    request<PluginCommand[]>(`/plugins/${type}/${name}/commands`),
   install: (type: string, name: string, clean = false) =>
     request<PluginTaskAccepted>(`/plugins/${type}/${name}/install`, {
       method: "POST",

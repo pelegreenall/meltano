@@ -1003,3 +1003,33 @@ details > summary {
   font-weight: 560;
   font-size: 13px;
 }
+
+/* A plugin's declared commands. Each row is one runnable thing, so the name
+   and its description read as a unit and the control that starts it sits
+   apart from them. */
+.command-list {
+  list-style: none;
+  margin: var(--s3) 0 0;
+  padding: 0;
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s3) 0;
+  border-top: 1px solid var(--border);
+}
+
+.command-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.command-text span {
+  color: var(--text-muted);
+  font-size: 13px;
+}
