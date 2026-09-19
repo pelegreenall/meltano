@@ -41,12 +41,18 @@ class TestCompile:
         assert result == {"name": "record['name']"}
 
     def test_cast_wraps_the_source(self) -> None:
-        """A cast is a call around whatever produces the column."""
+        """A cast is a call around whatever produces the column.
+
+        Guarded against nulls: a bare `str(record['id'])` turns a null into
+        the literal text "None" in the destination.
+        """
         result = compile_steps(
             [{"kind": "cast", "column": "id", "type": "string"}],
         )
 
-        assert result == {"id": "str(record['id'])"}
+        assert result == {
+            "id": "(str(record['id']) if record['id'] is not None else None)",
+        }
 
     def test_steps_compose_in_order(self) -> None:
         """Rename then cast must read from the *original* field.
@@ -62,7 +68,10 @@ class TestCompile:
             ],
         )
 
-        assert result == {"customer_id": "str(record['id'])", "id": None}
+        assert result == {
+            "customer_id": "(str(record['id']) if record['id'] is not None else None)",
+            "id": None,
+        }
 
     def test_filters_are_combined(self) -> None:
         """Stacked filters all have to hold, as they do in Power Query."""
@@ -179,14 +188,39 @@ class TestApply:
 
         assert rows[0]["id"] == "1"
 
-    def test_an_impossible_cast_leaves_the_value_alone(self) -> None:
-        """Showing the offending value beats failing the whole preview."""
+    def test_an_impossible_cast_is_an_error(self) -> None:
+        """The run would die on this row, so the preview must not look fine.
+
+        The compiled stream map is a bare `int(...)`, which raises inside the
+        mapper and fails the whole pipeline. Showing the original value here
+        would promise a run that cannot happen.
+        """
+        with pytest.raises(TransformError, match="not-a-number"):
+            apply_steps(
+                [{"id": "not-a-number"}],
+                [{"kind": "cast", "column": "id", "type": "integer"}],
+            )
+
+    def test_an_impossible_cast_names_the_column_and_a_way_out(self) -> None:
+        """Someone has to be able to act on it."""
+        with pytest.raises(TransformError, match=r"'id'.*filter it out"):
+            apply_steps(
+                [{"id": "not-a-number"}],
+                [{"kind": "cast", "column": "id", "type": "integer"}],
+            )
+
+    def test_casting_a_null_leaves_it_null(self) -> None:
+        """A null is not an unparseable value; it stays a null.
+
+        The compiled expression guards on this, so the preview must too -
+        otherwise a nullable column reads as the text "None" after a run.
+        """
         rows = apply_steps(
-            [{"id": "not-a-number"}],
-            [{"kind": "cast", "column": "id", "type": "integer"}],
+            [{"id": None}],
+            [{"kind": "cast", "column": "id", "type": "string"}],
         )
 
-        assert rows[0]["id"] == "not-a-number"
+        assert rows[0]["id"] is None
 
     def test_filter_removes_rows(self) -> None:
         """A filtered row is dropped, as `__filter__` drops it."""
@@ -220,14 +254,24 @@ class TestApply:
 
         assert [row["id"] for row in rows] == [1, 2]
 
-    def test_incomparable_types_do_not_pass(self) -> None:
-        """Comparing a string to a number raises in Python; here it filters."""
-        rows = apply_steps(
-            [{"spend": "lots"}, {"spend": 50}],
-            [{"kind": "filter", "column": "spend", "operator": "gt", "value": 10}],
-        )
+    def test_incomparable_types_are_an_error(self) -> None:
+        """Comparing a string to a number raises in Python, and in the mapper.
 
-        assert rows == [{"spend": 50}]
+        Quietly dropping the row here would show a tidy filtered table for a
+        run that dies the moment it reaches that record.
+        """
+        with pytest.raises(TransformError, match="cannot compare"):
+            apply_steps(
+                [{"spend": "lots"}, {"spend": 50}],
+                [
+                    {
+                        "kind": "filter",
+                        "column": "spend",
+                        "operator": "gt",
+                        "value": 10,
+                    },
+                ],
+            )
 
     def test_steps_apply_in_order(self) -> None:
         """Renaming then filtering on the new name works, as a user expects."""

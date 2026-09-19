@@ -85,8 +85,23 @@ CASES: list[Case] = [
     Case(
         name="cast-to-string",
         steps=[{"kind": "cast", "column": "score", "type": "string"}],
-        stream_map={"score": "str(record['score'])"},
+        stream_map={
+            "score": (
+                "(str(record['score']) if record['score'] is not None else None)"
+            ),
+        },
         rows=[{**r, "score": str(r["score"])} for r in RECORDS],
+    ),
+    Case(
+        name="cast-a-null-column",
+        steps=[{"kind": "cast", "column": "note", "type": "string"}],
+        stream_map={
+            "note": ("(str(record['note']) if record['note'] is not None else None)"),
+        },
+        rows=[dict(r) for r in RECORDS],
+        note="A null cast to text stays null. Compiled without the guard, "
+        "`str(None)` writes the literal 'None' into the destination while "
+        "the preview shows a null - wrong data, and quiet about it.",
     ),
     Case(
         name="filter-eq",
@@ -170,7 +185,12 @@ CASES: list[Case] = [
             {"kind": "rename", "column": "score", "to": "points"},
             {"kind": "cast", "column": "points", "type": "string"},
         ],
-        stream_map={"points": "str(record['score'])", "score": None},
+        stream_map={
+            "points": (
+                "(str(record['score']) if record['score'] is not None else None)"
+            ),
+            "score": None,
+        },
         rows=[
             {
                 **{k: v for k, v in r.items() if k != "score"},
@@ -188,8 +208,13 @@ CASES: list[Case] = [
             {"kind": "filter", "column": "score", "operator": "eq", "value": "90"},
         ],
         stream_map={
-            "score": "str(record['score'])",
-            "__filter__": "(str(record['score']) == '90')",
+            "score": (
+                "(str(record['score']) if record['score'] is not None else None)"
+            ),
+            "__filter__": (
+                "((str(record['score']) if record['score'] is not None "
+                "else None) == '90')"
+            ),
         },
         rows=[{**RECORDS[0], "score": "90"}],
         note="The filter must see the cast value. Reading the raw record here "

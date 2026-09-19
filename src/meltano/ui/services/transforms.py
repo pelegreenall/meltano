@@ -145,7 +145,14 @@ def compile_steps(steps: t.Sequence[t.Mapping[str, t.Any]]) -> dict[str, t.Any]:
             if cast is None:
                 msg = f"{position}: unknown cast type {step.get('type')!r}"
                 raise TransformError(msg)
-            expressions[t.cast("str", column)] = f"{cast}({current})"
+            # Null-safe, and parenthesised so the whole conditional can be
+            # embedded in a filter without `else` swallowing the comparison.
+            # Without the guard, `str(None)` writes the literal text "None"
+            # into the destination while the preview shows a null - wrong
+            # data, and quiet about it.
+            expressions[t.cast("str", column)] = (
+                f"({cast}({current}) if {current} is not None else None)"
+            )
 
         elif kind == "filter":
             filters.append(_compile_filter(step, position, expressions))
@@ -211,18 +218,34 @@ def _compile_filter(
     )
 
 
-def _cast_value(value: t.Any, cast: str) -> t.Any:  # noqa: ANN401
-    """Apply one cast locally, leaving a value alone if it cannot convert.
+#: How each cast reads in a message, so an error names what was asked for
+#: rather than the Python callable that implements it.
+_CAST_NAMES: dict[str, str] = {
+    "int": "a whole number",
+    "float": "a decimal number",
+    "str": "text",
+    "bool": "true or false",
+}
 
-    A preview that raised on the first unparseable row would be less useful
-    than one showing which row is the problem.
+
+def _cast_value(value: t.Any, cast: str, column: str) -> t.Any:  # noqa: ANN401
+    """Apply one cast locally, exactly as the compiled expression would.
+
+    A value that cannot convert is an error rather than a value left alone.
+    The stream map compiles to a bare `int(...)`, which raises inside the
+    mapper and fails the whole run; a preview that quietly showed the
+    original value would promise a run that cannot happen.
 
     Args:
         value: The value to convert.
         cast: The name of the Python callable.
+        column: The column being cast, for the error message.
 
     Returns:
-        The converted value, or the original if conversion failed.
+        The converted value, or None for a null.
+
+    Raises:
+        TransformError: If the value cannot convert.
     """
     if value is None:
         return None
@@ -234,50 +257,70 @@ def _cast_value(value: t.Any, cast: str) -> t.Any:  # noqa: ANN401
     }
     try:
         return functions[cast](value)
-    except (TypeError, ValueError):
-        return value
+    except (TypeError, ValueError) as err:
+        msg = (
+            f"cannot read {value!r} in column {column!r} as "
+            f"{_CAST_NAMES[cast]}. A run would fail on this row; filter it "
+            "out or drop the cast."
+        )
+        raise TransformError(msg) from err
 
 
-def _matches(value: t.Any, operator: str, expected: t.Any) -> bool:  # noqa: ANN401
-    """Evaluate one comparison locally.
+def _matches(
+    value: t.Any,  # noqa: ANN401
+    operator: str,
+    expected: t.Any,  # noqa: ANN401
+    column: str,
+) -> bool:
+    """Evaluate one comparison locally, exactly as the expression would.
 
-    Mirrors `_COMPARISONS`, so a preview agrees with what the compiled stream
-    map will do at run time.
+    Mirrors `_COMPARISONS`, including where it fails. A comparison Python
+    cannot make raises here rather than quietly dropping the row, because the
+    compiled expression raises inside the mapper and fails the whole run -
+    and a preview showing a tidy filtered table would be describing a run
+    that cannot happen.
 
     Args:
         value: The record's value.
         operator: The comparison.
         expected: The step's value.
+        column: The column being compared, for the error message.
 
     Returns:
         Whether the record passes.
+
+    Raises:
+        TransformError: If the two values cannot be compared.
     """
     if operator == "is_null":
         return value is None
     if operator == "not_null":
         return value is not None
-    if operator == "contains":
-        return expected in (value or "")
     if operator == "eq":
         return bool(value == expected)
     if operator == "ne":
         return bool(value != expected)
 
-    # The ordered comparisons, where mismatched types would raise rather than
-    # answer. A row that cannot be compared has not passed the filter.
-    try:
-        if operator == "gt":
-            return bool(value > expected)
-        if operator == "gte":
-            return bool(value >= expected)
-        if operator == "lt":
-            return bool(value < expected)
-        if operator == "lte":
-            return bool(value <= expected)
-    except TypeError:
+    comparisons: dict[str, t.Callable[[t.Any, t.Any], bool]] = {
+        "contains": lambda a, b: b in (a or ""),
+        "gt": lambda a, b: bool(a > b),
+        "gte": lambda a, b: bool(a >= b),
+        "lt": lambda a, b: bool(a < b),
+        "lte": lambda a, b: bool(a <= b),
+    }
+    compare = comparisons.get(operator)
+    if compare is None:
         return False
 
-    return False
+    try:
+        return compare(value, expected)
+    except TypeError as err:
+        msg = (
+            f"cannot compare {value!r} in column {column!r} with "
+            f"{expected!r}. A run would fail on this row; filter it out or "
+            "cast the column first."
+        )
+        raise TransformError(msg) from err
 
 
 def apply_steps(
@@ -346,11 +389,13 @@ def _apply_one(
             row[column] = _cast_value(
                 row[column],
                 _CASTS[t.cast("str", step.get("type"))],
+                column,
             )
     elif kind == "filter" and not _matches(
         row.get(column),
         t.cast("str", step.get("operator")),
         step.get("value"),
+        column,
     ):
         return None
 

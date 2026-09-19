@@ -139,7 +139,13 @@ async def preview(
             ),
         )
 
-    rows = apply_steps(result.records, steps) if steps else list(result.records)
+    try:
+        rows = apply_steps(result.records, steps) if steps else list(result.records)
+    except TransformError as err:
+        # Reached only once real records are in hand: the steps compiled, and
+        # it is this data that they cannot be applied to. Worth the same 422
+        # as a malformed step, because the fix is the same kind of edit.
+        raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
 
     return PreviewResponse(
         extractor=extractor,

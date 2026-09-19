@@ -256,7 +256,9 @@ class TestCompileEndpoint:
             json={"steps": [{"kind": "cast", "column": "id", "type": "string"}]},
         ).json()
 
-        assert body["stream_map"] == {"id": "str(record['id'])"}
+        assert body["stream_map"] == {
+            "id": "(str(record['id']) if record['id'] is not None else None)",
+        }
 
     def test_rejects_a_structurally_invalid_step(
         self,
