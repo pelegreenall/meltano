@@ -32,6 +32,9 @@ from meltano.core.job import Job
 from meltano.core.plugin import PluginType
 from meltano.core.plugin.project_plugin import ProjectPlugin
 from meltano.core.project_plugins_service import PluginAlreadyAddedException
+from meltano.ui.services.transforms import compile_steps
+from tests.meltano.ui.transform_cases import CASES, Case
+from tests.meltano.ui.transform_cases import RECORDS as CASE_RECORDS
 
 if t.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -556,3 +559,202 @@ class TestMappingAppliedByARealMapper:
         assert run["status"] == "success", run
 
         assert _rows(singer_pipeline) == preview.json()["rows"]
+
+
+#: Emits one stream per conformance case, each carrying the same records, so
+#: a single run can exercise the whole table: a mapping's `stream_maps` is
+#: keyed by stream, so one mapping can hold every case's compiled map at once.
+_CASE_TAP_SOURCE = '''\
+"""A Singer tap emitting one stream per conformance case."""
+
+import json
+import os
+
+cases = json.loads(os.environ["CONFORMANCE_CASES"])
+records = json.loads(os.environ["CONFORMANCE_RECORDS"])
+
+# Every property is declared nullable and untyped where it can be, because
+# these streams carry the same records through different transformations and
+# the mapper rewrites the schema from the expressions it is given.
+properties = {
+    key: {"type": ["null", "integer", "number", "string", "boolean"]}
+    for key in records[0]
+}
+
+for stream in cases:
+    print(
+        json.dumps(
+            {
+                "type": "SCHEMA",
+                "stream": stream,
+                "key_properties": [],
+                "schema": {"type": "object", "properties": properties},
+            },
+        ),
+    )
+    for record in records:
+        print(
+            json.dumps({"type": "RECORD", "stream": stream, "record": record}),
+        )
+'''
+
+#: Writes each record with the stream it belongs to, which is how the rows of
+#: one case are told from another's.
+_CASE_TARGET_SOURCE = '''\
+"""A Singer target recording which stream each record arrived on."""
+
+import json
+import os
+import sys
+
+with open(os.environ["CONFORMANCE_OUT"], "w", encoding="utf-8") as handle:
+    for line in sys.stdin:
+        message = json.loads(line)
+        if message["type"] == "RECORD":
+            handle.write(
+                json.dumps(
+                    {"stream": message["stream"], "record": message["record"]},
+                )
+                + "\\n",
+            )
+'''
+
+
+def _stream_of(case: Case) -> str:
+    """Return the stream name carrying one case.
+
+    Args:
+        case: The conformance case.
+
+    Returns:
+        A stream name safe to use as an identifier.
+    """
+    return "case_" + case.name.replace("-", "_")
+
+
+@pytest.fixture
+def conformance_pipeline(
+    project: Project,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Path]:
+    """Declare a tap and loader carrying every conformance case.
+
+    Args:
+        project: The test project.
+        tmp_path: Scratch space for the scripts and the loader's output.
+        monkeypatch: Supplies the cases and records to the run subprocess.
+
+    Yields:
+        The file the loader writes to.
+    """
+    out = tmp_path / "conformance.jsonl"
+    monkeypatch.setenv("CONFORMANCE_OUT", str(out))
+    monkeypatch.setenv(
+        "CONFORMANCE_CASES",
+        json.dumps([_stream_of(case) for case in CASES]),
+    )
+    monkeypatch.setenv("CONFORMANCE_RECORDS", json.dumps(CASE_RECORDS))
+
+    added = [
+        _plugin(
+            "extractors",
+            "case-tap",
+            _write_executable(tmp_path / "case-tap", _CASE_TAP_SOURCE),
+        ),
+        _plugin(
+            "loaders",
+            "case-target",
+            _write_executable(tmp_path / "case-target", _CASE_TARGET_SOURCE),
+        ),
+    ]
+    for plugin in added:
+        project.plugins.add_to_file(plugin)
+
+    try:
+        yield out
+    finally:
+        for plugin in added:
+            project.plugins.remove_from_file(plugin)
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("conformance_pipeline", "real_mapper")
+class TestTransformConformance:
+    """Every case in the table, replayed through the real mapper.
+
+    The preview applies steps sequentially to an evolving row; the compiled
+    stream map is one declarative pass in which every expression reads the
+    original record. Nothing makes those two agree by construction, and the
+    shaper's whole promise is that they do.
+    """
+
+    def test_the_mapper_reproduces_every_previewed_result(
+        self,
+        ui_client: TestClient,
+        project: Project,
+        conformance_pipeline: Path,
+    ) -> None:
+        """One run, one stream per case, compared row for row.
+
+        Cases share a run because a mapping's `stream_maps` is keyed by
+        stream: one mapping can carry the whole table, which keeps this to a
+        single pipeline rather than one per case.
+        """
+        stream_maps = {_stream_of(case): compile_steps(case.steps) for case in CASES}
+        _put_mapping(project, "conformance", stream_maps)
+
+        started = ui_client.post(
+            "/api/v1/runs",
+            json={"blocks": ["case-tap", "conformance", "case-target"]},
+        )
+        assert started.status_code == 202, started.text
+
+        run = _await_run(ui_client, started.json()["run_id"])
+        assert run["status"] == "success", run
+
+        produced: dict[str, list[dict[str, t.Any]]] = {}
+        for line in conformance_pipeline.read_text().splitlines():
+            if not line:
+                continue
+            message = json.loads(line)
+            produced.setdefault(message["stream"], []).append(message["record"])
+
+        divergent = {
+            case.name: {
+                "expected": case.rows,
+                "mapper": produced.get(_stream_of(case), []),
+            }
+            for case in CASES
+            if produced.get(_stream_of(case), []) != case.rows
+        }
+
+        assert not divergent, (
+            "the real mapper disagreed with the preview for: "
+            f"{sorted(divergent)}\n{json.dumps(divergent, indent=2, default=str)}"
+        )
+
+
+def _put_mapping(
+    project: Project,
+    name: str,
+    stream_maps: dict[str, t.Any],
+) -> None:
+    """Store one mapping carrying every case's stream map.
+
+    Written straight to the file rather than through `POST /mappings`, which
+    takes one stream per call: this needs them in a single mapping so that one
+    run covers the table.
+
+    Args:
+        project: The test project.
+        name: The mapping's name.
+        stream_maps: Stream name to compiled stream map.
+    """
+    with project.config_service.update_meltano_yml() as meltano_yml:
+        for plugin in meltano_yml["plugins"]["mappers"]:
+            if not plugin.is_mapping():
+                plugin.extras["mappings"] = [
+                    {"name": name, "config": {"stream_maps": stream_maps}},
+                ]
+                return

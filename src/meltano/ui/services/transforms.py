@@ -148,7 +148,7 @@ def compile_steps(steps: t.Sequence[t.Mapping[str, t.Any]]) -> dict[str, t.Any]:
             expressions[t.cast("str", column)] = f"{cast}({current})"
 
         elif kind == "filter":
-            filters.append(_compile_filter(step, position))
+            filters.append(_compile_filter(step, position, expressions))
 
         else:
             msg = f"{position}: unknown step kind {kind!r}"
@@ -162,18 +162,31 @@ def compile_steps(steps: t.Sequence[t.Mapping[str, t.Any]]) -> dict[str, t.Any]:
     return stream_map
 
 
-def _compile_filter(step: t.Mapping[str, t.Any], position: str) -> str:
+def _compile_filter(
+    step: t.Mapping[str, t.Any],
+    position: str,
+    expressions: t.Mapping[str, str | None],
+) -> str:
     """Compile one filter step into a boolean expression.
+
+    The filter reads the column as the steps before it left it, not as it
+    arrived. A preview applies steps in order, so a filter written after a
+    cast sees the cast value and one written after a rename sees the new name;
+    a filter compiled against the raw record would do neither. Both failures
+    are silent - comparing an int to a string simply keeps nothing, and
+    reading a renamed column looks for a field the record does not have.
 
     Args:
         step: The step.
         position: Where it sits, for error messages.
+        expressions: The columns rewritten so far, as folded by the caller.
 
     Returns:
         The expression.
 
     Raises:
-        TransformError: If the step is malformed.
+        TransformError: If the step is malformed, or filters on a column an
+            earlier step removed.
     """
     column = step.get("column")
     operator = step.get("operator")
@@ -187,8 +200,13 @@ def _compile_filter(step: t.Mapping[str, t.Any], position: str) -> str:
         msg = f"{position}: unknown operator {operator!r}"
         raise TransformError(msg)
 
+    source = expressions.get(t.cast("str", column), _source(t.cast("str", column)))
+    if source is None:
+        msg = f"{position}: cannot filter on {column!r}, which an earlier step removed"
+        raise TransformError(msg)
+
     return template.format(
-        src=_source(column),
+        src=source,
         val=_literal(step.get("value")),
     )
 

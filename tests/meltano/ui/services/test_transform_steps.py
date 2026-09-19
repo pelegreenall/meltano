@@ -9,6 +9,8 @@ from meltano.ui.services.transforms import (
     apply_steps,
     compile_steps,
 )
+from tests.meltano.ui.transform_cases import CASES, Case
+from tests.meltano.ui.transform_cases import RECORDS as CASE_RECORDS
 
 RECORDS = [
     {"id": 1, "name": "Ada", "email": "ada@x.com", "status": "active", "spend": 120.5},
@@ -115,6 +117,39 @@ class TestCompile:
         """A bad step is named by position so the UI can point at it."""
         with pytest.raises(TransformError, match=expected):
             compile_steps([step])
+
+
+class TestFilterAfterDrop:
+    """Filtering on something an earlier step removed."""
+
+    def test_it_is_refused_rather_than_compiled(self) -> None:
+        """There is no value left to compare.
+
+        The alternative is an expression reading a column the stream map has
+        already set to null, which would filter every record out without
+        saying why.
+        """
+        with pytest.raises(TransformError, match="an earlier step removed"):
+            compile_steps(
+                [
+                    {"kind": "drop", "column": "email"},
+                    {
+                        "kind": "filter",
+                        "column": "email",
+                        "operator": "not_null",
+                    },
+                ],
+            )
+
+    def test_the_position_is_named(self) -> None:
+        """A step list is edited as a list, so the index is how it is found."""
+        with pytest.raises(TransformError, match="step 2"):
+            compile_steps(
+                [
+                    {"kind": "drop", "column": "email"},
+                    {"kind": "filter", "column": "email", "operator": "is_null"},
+                ],
+            )
 
 
 class TestApply:
@@ -224,3 +259,41 @@ class TestApply:
         apply_steps(RECORDS, [{"kind": "drop", "column": "email"}])
 
         assert before == RECORDS
+
+
+@pytest.mark.parametrize(
+    "case",
+    CASES,
+    ids=[case.name for case in CASES],
+)
+class TestConformance:
+    """The table both the compiler and the preview must satisfy.
+
+    Kept as data rather than as prose so the same cases can be replayed
+    through a real mapper, and so a reimplementation of this compiler has
+    something to be checked against rather than a description to interpret.
+    """
+
+    def test_the_compiled_stream_map_is_exact(self, case: Case) -> None:
+        """What gets written to `meltano.yml`, pinned character for character.
+
+        Not a loose check: this text is evaluated by someone else's code, so
+        an expression that merely looks right is not evidence.
+        """
+        assert compile_steps(case.steps) == case.stream_map
+
+    def test_the_preview_produces_the_recorded_rows(self, case: Case) -> None:
+        """What the shaper shows, for the same steps."""
+        assert apply_steps(CASE_RECORDS, case.steps) == case.rows
+
+    def test_the_records_are_not_mutated(self, case: Case) -> None:
+        """A preview is run repeatedly while someone edits.
+
+        Applying steps to the caller's rows rather than to copies would make
+        the second preview of an unchanged step list disagree with the first.
+        """
+        before = [dict(record) for record in CASE_RECORDS]
+
+        apply_steps(CASE_RECORDS, case.steps)
+
+        assert before == CASE_RECORDS
