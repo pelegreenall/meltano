@@ -281,3 +281,195 @@ def _clean_exports(project: Project) -> t.Iterator[None]:
     yield
     for name in ("sources", "sources-taps"):
         shutil.rmtree(project.root / name, ignore_errors=True)
+
+
+@pytest.fixture
+def database_target(project: Project) -> t.Iterator[ProjectPlugin]:
+    """Declare a loader configured against a database.
+
+    Declared here rather than configuring `target-mock`, which has no host or
+    port among its settings: setting one raises `Unknown setting`, and this
+    suite treats warnings as errors.
+
+    Args:
+        project: The test project.
+
+    Yields:
+        The loader.
+    """
+    from meltano.core.plugin import PluginType
+    from meltano.core.plugin.project_plugin import ProjectPlugin as Plugin
+
+    plugin = Plugin(
+        PluginType.LOADERS,
+        "target-warehouse",
+        namespace="target_postgres",
+        executable="target-warehouse",
+        settings=[
+            {"name": "host"},
+            {"name": "port", "kind": "integer"},
+            {"name": "database"},
+            {"name": "sqlalchemy_url"},
+        ],
+        config={
+            "host": "warehouse.internal",
+            "port": 5432,
+            "database": "analytics",
+        },
+    )
+    project.plugins.add_to_file(plugin)
+    try:
+        yield plugin
+    finally:
+        # The `project` fixture is class-scoped, so this would otherwise be
+        # visible to whatever runs next.
+        project.plugins.remove_from_file(plugin)
+
+
+class TestConnectionEndpoint:
+    """The database a connector points at.
+
+    This is what lets a reader register a source without knowing which of a
+    connector's settings happen to mean "host" - the whole reason a `.source`
+    is worth writing rather than shipping `meltano.yml`.
+    """
+
+    def test_a_database_connector_reports_its_endpoint(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """Host, port and database come back as an endpoint, not as settings."""
+        body = ui_client.get(f"{SOURCES}/loaders/{database_target.name}").json()
+
+        assert body["connection"]["host"] == "warehouse.internal"
+        assert body["connection"]["port"] == 5432
+        assert body["connection"]["database"] == "analytics"
+
+    def test_the_port_is_a_number(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """A port set as text is still a port.
+
+        Values arrive as strings or integers depending on whether they came
+        from `meltano.yml` or an environment variable, and a reader dialling
+        `"5432"` is a bug waiting to happen.
+        """
+        body = ui_client.get(f"{SOURCES}/loaders/{database_target.name}").json()
+
+        assert body["connection"]["port"] == 5432
+        assert isinstance(body["connection"]["port"], int)
+
+    def test_the_derivation_is_recorded(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """Which setting supplied each field is stated, not implied.
+
+        The mapping from settings to an endpoint is convention rather than
+        declaration, so a reader that disagrees can see what was used instead
+        of guessing why a host is wrong.
+        """
+        body = ui_client.get(f"{SOURCES}/loaders/{database_target.name}").json()
+
+        assert body["connection"]["derived_from"] == {
+            "host": "host",
+            "port": "port",
+            "database": "database",
+        }
+
+    @pytest.mark.usefixtures("target")
+    def test_a_connector_with_no_host_reports_none(
+        self,
+        ui_client: TestClient,
+        target: ProjectPlugin,
+    ) -> None:
+        """An unconfigured connector has no endpoint to report.
+
+        Null is the honest answer. Inventing `localhost` would send a reader
+        to the wrong machine, which is worse than telling it nothing.
+        """
+        body = ui_client.get(f"{SOURCES}/loaders/{target.name}").json()
+
+        assert body["connection"] is None
+
+    def test_the_dialect_comes_from_the_namespace(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """`target_postgres` and `tap_postgres` describe the same engine."""
+        body = ui_client.get(f"{SOURCES}/loaders/{database_target.name}").json()
+
+        assert body["connection"]["engine"] == "postgres"
+
+    def test_credentials_are_not_part_of_the_endpoint(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """The endpoint is an address, never a login."""
+        connection = ui_client.get(
+            f"{SOURCES}/loaders/{database_target.name}",
+        ).json()["connection"]
+
+        assert set(connection) == {
+            "engine",
+            "host",
+            "port",
+            "database",
+            "derived_from",
+        }
+
+
+class TestConnectionUrlsAreNotLeaked:
+    """A URL setting can carry a password Meltano does not call sensitive."""
+
+    def test_a_url_with_credentials_is_withheld(
+        self,
+        ui_client: TestClient,
+        project: Project,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """`postgresql://user:pass@host/db` must not reach a committed file.
+
+        Meltano does not mark a connection URL sensitive, and it is right not
+        to - a URL without credentials is not a secret. One *with* them is,
+        and a `.source` is written to disk and frequently committed.
+        """
+        from meltano.core.plugin.settings_service import PluginSettingsService
+
+        service = PluginSettingsService(project, database_target)
+        service.set("sqlalchemy_url", f"postgresql://admin:{SECRET}@db.internal/x")
+
+        try:
+            body = ui_client.get(f"{SOURCES}/loaders/{database_target.name}").json()
+        finally:
+            service.unset("sqlalchemy_url")
+
+        assert SECRET not in json.dumps(body)
+        url = next(s for s in body["settings"] if s["name"] == "sqlalchemy_url")
+        assert url["value"] is None
+
+    def test_a_url_without_credentials_is_kept(
+        self,
+        ui_client: TestClient,
+        project: Project,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """Withholding every URL would throw away the useful case."""
+        from meltano.core.plugin.settings_service import PluginSettingsService
+
+        service = PluginSettingsService(project, database_target)
+        service.set("sqlalchemy_url", "postgresql://db.internal:5432/analytics")
+
+        try:
+            body = ui_client.get(f"{SOURCES}/loaders/{database_target.name}").json()
+        finally:
+            service.unset("sqlalchemy_url")
+
+        url = next(s for s in body["settings"] if s["name"] == "sqlalchemy_url")
+        assert url["value"] == "postgresql://db.internal:5432/analytics"

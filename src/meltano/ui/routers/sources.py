@@ -14,6 +14,7 @@ secret; writing one to disk here would undo that.
 from __future__ import annotations
 
 import json
+import re
 import typing as t
 
 import anyio
@@ -30,6 +31,7 @@ from meltano.ui.schemas.sources import (
     ExportedSource,
     ExportSourcesRequest,
     ExportSourcesResponse,
+    SourceConnection,
     SourceDocument,
     SourceSetting,
 )
@@ -55,6 +57,120 @@ SOURCE_SUFFIX = ".source"
 #: the connector itself, so a document meant for another runner leaves them
 #: out. `_select` in particular is reported as the document's `select` field.
 _EXTRA_PREFIX = "_"
+
+#: Settings that name a database endpoint, in the order they are preferred.
+#: Meltano does not declare which setting is the host - connectors simply
+#: agree by convention - so this is a convention reader, and the document
+#: records what it used.
+_HOST_SETTINGS = ("host", "hostname")
+_PORT_SETTINGS = ("port",)
+_DATABASE_SETTINGS = ("database", "dbname")
+
+#: Namespace prefixes to drop when deriving a dialect: `target_postgres`
+#: describes the same engine as `tap_postgres`.
+_NAMESPACE_PREFIXES = ("tap_", "target_")
+
+#: A URL carrying credentials, e.g. `postgresql://user:pass@host/db`.
+#: Connectors offer these as an alternative to host/port/user/password, and
+#: Meltano does not mark them sensitive because the *setting* is not
+#: inherently a secret - a URL without credentials is fine. A `.source` is
+#: written to disk and frequently committed, so one that does carry them is
+#: withheld here regardless of how it is declared.
+_URL_WITH_CREDENTIALS = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:[^/\s@]+@")
+
+
+def _carries_credentials(value: object) -> bool:
+    """Report whether a value is a URL with a username and password in it.
+
+    Args:
+        value: The configured value.
+
+    Returns:
+        True when the value would leak a credential if written out.
+    """
+    return isinstance(value, str) and bool(_URL_WITH_CREDENTIALS.match(value))
+
+
+def _as_port(value: object) -> int | None:
+    """Coerce a configured port to an integer.
+
+    Ports arrive as either, depending on whether the value came from
+    `meltano.yml` or an environment variable.
+
+    Args:
+        value: The configured value.
+
+    Returns:
+        The port, or None when it is not one.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _engine(namespace: str | None) -> str | None:
+    """Derive a database dialect from a plugin namespace.
+
+    Args:
+        namespace: The plugin's namespace, e.g. `target_postgres`.
+
+    Returns:
+        The dialect, e.g. `postgres`.
+    """
+    for prefix in _NAMESPACE_PREFIXES:
+        if namespace and namespace.startswith(prefix):
+            return namespace[len(prefix) :]
+    return namespace
+
+
+def _connection(
+    settings: list[SourceSetting],
+    namespace: str | None,
+) -> SourceConnection | None:
+    """Describe the database endpoint a connector points at, if it has one.
+
+    Args:
+        settings: The connector's settings, already redacted.
+        namespace: The plugin namespace, which names the dialect.
+
+    Returns:
+        The endpoint, or None when the connector does not address one.
+    """
+    configured: dict[str, object] = {
+        setting.name: setting.value
+        for setting in settings
+        if setting.is_set and setting.value is not None
+    }
+    derived: dict[str, str] = {}
+
+    def pick(names: tuple[str, ...], field: str) -> object:
+        for name in names:
+            if name in configured:
+                derived[field] = name
+                return configured[name]
+        return None
+
+    host = pick(_HOST_SETTINGS, "host")
+    # No host means no endpoint to report: an API extractor has none, and a
+    # warehouse addressed by account name cannot be described this way.
+    # Inventing one would be worse than saying nothing.
+    if not isinstance(host, str) or not host:
+        return None
+
+    port = pick(_PORT_SETTINGS, "port")
+    database = pick(_DATABASE_SETTINGS, "database")
+
+    return SourceConnection(
+        engine=_engine(namespace),
+        host=host,
+        port=_as_port(port),
+        database=database if isinstance(database, str) else None,
+        derived_from=derived,
+    )
 
 
 def _describe(ctx: AppContext, plugin: ProjectPlugin) -> SourceDocument:
@@ -98,7 +214,16 @@ def _describe(ctx: AppContext, plugin: ProjectPlugin) -> SourceDocument:
                 env=service.setting_env(definition),
                 # Belt and braces: `redacted=True` already replaces the value,
                 # but a document that leaked one would be hard to notice.
-                value=None if sensitive or value == REDACTED_VALUE else value,
+                # `_carries_credentials` covers the case Meltano cannot: a
+                # connection URL is not declared sensitive, yet one with a
+                # password in it is exactly as damaging here.
+                value=(
+                    None
+                    if sensitive
+                    or value == REDACTED_VALUE
+                    or _carries_credentials(value)
+                    else value
+                ),
                 is_set=source not in _UNSET_SOURCES,
             ),
         )
@@ -107,17 +232,21 @@ def _describe(ctx: AppContext, plugin: ProjectPlugin) -> SourceDocument:
     if plugin.type is PluginType.EXTRACTORS:
         select = list(SelectService(ctx.project, plugin.name).current_select)
 
+    settings = sorted(settings, key=lambda item: item.name)
+    namespace = getattr(plugin, "namespace", None)
+
     return SourceDocument(
         name=plugin.name,
         type=str(plugin.type),
         label=getattr(plugin, "label", None),
         variant=getattr(plugin, "variant", None),
-        namespace=getattr(plugin, "namespace", None),
+        namespace=namespace,
         pip_url=getattr(plugin, "pip_url", None),
         executable=getattr(plugin, "executable", None),
         capabilities=[str(c) for c in (getattr(plugin, "capabilities", None) or [])],
         environment=ctx.environment_name,
-        settings=sorted(settings, key=lambda item: item.name),
+        settings=settings,
+        connection=_connection(settings, namespace),
         select=select,
         meltano_version=get_meltano_version(),
     )

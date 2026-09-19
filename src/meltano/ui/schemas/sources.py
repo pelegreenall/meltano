@@ -18,7 +18,10 @@ from pydantic import BaseModel, Field
 #: Bumped when the document's shape changes in a way a reader must notice.
 #: Emitted in every document so a consumer can refuse one it does not
 #: understand rather than silently misreading it.
-SOURCE_SCHEMA_VERSION = 1
+#:
+#: 2 added `connection`: the database endpoint a connector points at, so a
+#: reader can register the source without parsing Meltano's settings itself.
+SOURCE_SCHEMA_VERSION = 2
 
 
 class SourceSetting(BaseModel):
@@ -40,6 +43,39 @@ class SourceSetting(BaseModel):
     )
     is_set: bool = Field(
         description="False when only the connector's own default applies.",
+    )
+
+
+class SourceConnection(BaseModel):
+    """The database endpoint a connector points at.
+
+    This is what makes a `.source` usable by something that is not Meltano:
+    a reader learns where the data lives without having to know which of a
+    connector's settings mean "host" this week.
+
+    Present only when the connector is configured against a reachable
+    database. An API extractor has no host, and a warehouse addressed by
+    account name rather than host:port cannot be described this way either -
+    both report null rather than an invented endpoint.
+
+    The endpoint's *identity* only. Credentials stay in `settings`, where the
+    sensitive ones are already withheld.
+    """
+
+    engine: str | None = Field(
+        default=None,
+        description="Database dialect, e.g. 'postgres', from the namespace.",
+    )
+    host: str
+    port: int | None = None
+    database: str | None = None
+    derived_from: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Which setting supplied each field. The mapping from settings to "
+            "an endpoint is by convention, not declaration, so a reader that "
+            "disagrees can see exactly what was used."
+        ),
     )
 
 
@@ -66,6 +102,10 @@ class SourceDocument(BaseModel):
         description="The Meltano environment these values were read from.",
     )
     settings: list[SourceSetting] = Field(default_factory=list)
+    connection: SourceConnection | None = Field(
+        default=None,
+        description="The database endpoint, when this connector has one.",
+    )
     select: list[str] = Field(
         default_factory=list,
         description="Select patterns. Extractors only; empty for other types.",
