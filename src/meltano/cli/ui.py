@@ -142,7 +142,33 @@ def ui(
         # changed, so the second server must not open another window.
         settings = replace(settings, open_browser=False)
 
+    else:
+        # `pass_project(migrate=True)` is what every other command uses to do
+        # this. It cannot be used here, because running outside a project is
+        # the interesting case rather than an error, so the migration it
+        # performs has to be done by hand.
+        _migrate(project)
+
     run_async(serve)(project, settings)
+
+
+def _migrate(project: Project) -> None:
+    """Bring a project's system database up to date.
+
+    Serving without this works right up until the first query, because a
+    system database is usually migrated already - any other `meltano` command
+    would have done it. A database this project has not been run against
+    before is not, and the UI would start, report itself healthy, and fail on
+    the first request that touched a table.
+
+    Args:
+        project: The project whose system database to migrate.
+    """
+    from meltano.core.db import project_engine
+    from meltano.core.migration_service import MigrationService
+
+    engine, _ = project_engine(project, default=True)
+    MigrationService(engine).upgrade(silent=True)
 
 
 def _open_project(ctx: click.Context, root: Path) -> Project:
@@ -161,8 +187,6 @@ def _open_project(ctx: click.Context, root: Path) -> Project:
         The activated project.
     """
     from meltano.cli.cli import detect_selected_environment
-    from meltano.core.db import project_engine
-    from meltano.core.migration_service import MigrationService
 
     project = Project(root)
     Project.activate(project)
@@ -179,7 +203,6 @@ def _open_project(ctx: click.Context, root: Path) -> Project:
     )[0]:
         project.activate_environment(selected)
 
-    engine, _ = project_engine(project, default=True)
-    MigrationService(engine).upgrade(silent=True)
+    _migrate(project)
 
     return project

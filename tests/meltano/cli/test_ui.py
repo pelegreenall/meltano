@@ -90,6 +90,33 @@ class TestHostGuard:
         assert serve.await_count == 1
 
 
+class TestSystemDatabase:
+    """The system database has to be usable before the server answers."""
+
+    def test_the_database_is_migrated_before_serving(
+        self,
+        cli_runner: MeltanoCliRunner,
+        project: t.Any,  # noqa: ARG002
+    ) -> None:
+        """Serving an unmigrated database fails only at the first query.
+
+        Every other command migrates through `pass_project(migrate=True)`,
+        which this one cannot use - running outside a project is the
+        interesting case here rather than an error. Doing it by hand is easy
+        to drop, and the loss is invisible against a database some other
+        command has already migrated: it surfaces only against a fresh one,
+        as a 500 from a server that reported itself healthy.
+        """
+        with (
+            mock.patch("meltano.ui.server.serve", new=mock.AsyncMock()) as serve,
+            mock.patch("meltano.cli.ui._migrate") as migrate,
+        ):
+            cli_runner.invoke(cli, ["ui", "--no-browser"])
+
+        assert migrate.call_count == 1
+        assert serve.await_count == 1
+
+
 class TestCommandRegistration:
     """The command must be reachable without the extra installed."""
 

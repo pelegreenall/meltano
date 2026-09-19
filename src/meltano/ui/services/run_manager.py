@@ -239,6 +239,21 @@ class RunManager:
             argv.append(f"--environment={environment}")
         return argv
 
+    def _database_env(self) -> dict[str, str]:
+        """Return the system database setting a child must share.
+
+        Returns:
+            `MELTANO_DATABASE_URI` bound to this server's effective value, or
+            nothing if it cannot be resolved - a child falling back to the
+            project default is what happens today, so a failure here must not
+            stop the run.
+        """
+        try:
+            uri = self.project.settings.get("database_uri")
+        except Exception:  # noqa: BLE001 - a run is worth more than this
+            return {}
+        return {"MELTANO_DATABASE_URI": str(uri)} if uri else {}
+
     def build_run_argv(
         self,
         blocks: Sequence[str],
@@ -373,6 +388,16 @@ class RunManager:
         child_env = {
             **os.environ,
             **(env or {}),
+            # A child that disagrees with this server about which system
+            # database to use writes its `Job` rows somewhere the runs
+            # endpoints never read, so a run succeeds and its history is
+            # simply absent. `--database-uri` sets an in-process override,
+            # which a subprocess cannot inherit; passing the resolved value
+            # makes parent and child agree however it was configured.
+            #
+            # Through the environment rather than argv: a system database URI
+            # carries a password, and argv is world-readable in `ps`.
+            **self._database_env(),
             # Last so that it cannot be overridden: the resulting `Job` row is
             # attributed to the UI rather than the CLI whatever the caller
             # passes.

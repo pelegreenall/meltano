@@ -12,6 +12,7 @@ import os
 import sys
 import typing as t
 from contextlib import suppress
+from unittest import mock
 
 import psutil
 import pytest
@@ -349,3 +350,52 @@ class TestRecovery:
         # sidecar cannot stop the server from starting.
         recovered = RunManager(project).recover()
         assert "broken" not in {entry.run_id for entry in recovered}
+
+
+class TestSystemDatabasePropagation:
+    """A child must write its `Job` rows where this server reads them."""
+
+    def test_the_database_uri_reaches_the_child(
+        self,
+        manager: RunManager,
+    ) -> None:
+        """`--database-uri` is an in-process override a subprocess cannot see.
+
+        Without passing it on, a run succeeds and writes its history to the
+        project's default database while the runs endpoints read the
+        configured one - so every run looks like it produced no jobs at all.
+        """
+        env = manager._database_env()
+
+        assert "MELTANO_DATABASE_URI" in env
+        assert env["MELTANO_DATABASE_URI"].startswith(("sqlite:", "postgresql"))
+
+    def test_the_uri_is_passed_by_environment_not_argv(
+        self,
+        manager: RunManager,
+    ) -> None:
+        """A system database URI carries a password.
+
+        `ps` is world-readable, so the one place this must not appear is the
+        command line.
+        """
+        argv = manager.build_run_argv(["tap-mock", "target-mock"], run_id="abc")
+
+        assert not any("database-uri" in arg for arg in argv)
+        assert not any("MELTANO_DATABASE_URI" in arg for arg in argv)
+
+    def test_an_unresolvable_setting_does_not_stop_a_run(
+        self,
+        manager: RunManager,
+    ) -> None:
+        """Falling back to the project default is today's behaviour.
+
+        Whatever goes wrong reading the setting, it is not worth refusing to
+        run: the child would resolve the same default on its own.
+        """
+        with mock.patch.object(
+            type(manager.project.settings),
+            "get",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert manager._database_env() == {}
