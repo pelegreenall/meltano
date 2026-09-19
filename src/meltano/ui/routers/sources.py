@@ -33,6 +33,7 @@ from meltano.ui.schemas.sources import (
     ExportSourcesResponse,
     SourceConnection,
     SourceDocument,
+    SourceProjection,
     SourceSetting,
 )
 
@@ -252,6 +253,32 @@ def _describe(ctx: AppContext, plugin: ProjectPlugin) -> SourceDocument:
     )
 
 
+def _project(document: SourceDocument) -> SourceProjection | None:
+    """Express a document as the connection a downstream registry stores.
+
+    Args:
+        document: The `.source` document.
+
+    Returns:
+        The projection, or None when the connector addresses no database and
+        so has nothing to register.
+    """
+    connection = document.connection
+    if connection is None:
+        return None
+
+    return SourceProjection(
+        # The plugin name, which is unique within a Meltano project, rather
+        # than the label: this is an identity, and two Postgres loaders would
+        # share a label.
+        path=f"{document.name}{SOURCE_SUFFIX}",
+        name=document.label or document.name,
+        engine=connection.engine,
+        target_host=connection.host,
+        target_port=connection.port,
+    )
+
+
 def _resolve_types(values: t.Iterable[str]) -> list[PluginType]:
     """Turn plural type names from a request into plugin types.
 
@@ -290,6 +317,66 @@ def list_sources(ctx: CtxDep) -> list[SourceDocument]:
     plugins = [p for p in ctx.project.plugins.plugins() if p.type in wanted]
     documents = [_describe(ctx, plugin) for plugin in plugins]
     return sorted(documents, key=lambda doc: (doc.type, doc.name))
+
+
+@router.get("/sources/projection", response_model=list[SourceProjection])
+def list_projections(ctx: CtxDep) -> list[SourceProjection]:
+    """List every connector that addresses a database, as connections.
+
+    This is what a downstream registry syncs from: one entry per connector
+    this project can reach a database with, in that registry's own terms.
+    Connectors without an endpoint - an API extractor, say - are absent
+    rather than present and empty, because there is nothing to register.
+
+    Registered before `/sources/{plugin_type}/{name}` would be: a literal
+    path has to win over a parameterised one.
+
+    Args:
+        ctx: The application context.
+
+    Returns:
+        The projections, ordered by path.
+    """
+    wanted = {PluginType.EXTRACTORS, PluginType.LOADERS}
+    plugins = [p for p in ctx.project.plugins.plugins() if p.type in wanted]
+    found = [_project(_describe(ctx, plugin)) for plugin in plugins]
+    return sorted(
+        (entry for entry in found if entry is not None),
+        key=lambda entry: entry.path,
+    )
+
+
+@router.get(
+    "/sources/{plugin_type}/{name}/projection",
+    response_model=SourceProjection,
+)
+def read_projection(plugin_type: str, name: str, ctx: CtxDep) -> SourceProjection:
+    """Express one connector as the connection a registry stores.
+
+    Args:
+        plugin_type: Plural plugin type from the path.
+        name: The connector's name.
+        ctx: The application context.
+
+    Returns:
+        The projection.
+
+    Raises:
+        HTTPException: 422 when the connector addresses no database, which is
+            a question with no answer rather than a missing connector.
+    """
+    plugin = resolve_plugin(ctx.project, plugin_type, name)
+    projection = _project(_describe(ctx, plugin))
+    if projection is None:
+        raise HTTPException(
+            HTTP_422_UNPROCESSABLE,
+            detail=(
+                f"{name!r} does not address a database, so it has no "
+                "connection to register. Only connectors configured with a "
+                "host have one."
+            ),
+        )
+    return projection
 
 
 @router.get("/sources/{plugin_type}/{name}", response_model=SourceDocument)

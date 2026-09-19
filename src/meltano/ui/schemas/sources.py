@@ -113,6 +113,47 @@ class SourceDocument(BaseModel):
     meltano_version: str = Field(description="The Meltano that produced this.")
 
 
+class SourceProjection(BaseModel):
+    """A `.source` expressed in the consuming system's vocabulary.
+
+    The document is Meltano's own view of a connector; this is the same
+    connection as the registry downstream expects to store. They are kept
+    apart deliberately - folding one into the other would make the document
+    claim a vocabulary it does not own, and the mapping between them is
+    exactly the thing worth being able to read.
+
+    Only the fields Meltano is authoritative for. A registry row also records
+    how the database is *reached* - which agent serves it, the credential
+    that agent authenticates with, whether it is live - and none of that is
+    knowable here. Those fields stay absent rather than being sent as nulls
+    that would overwrite what the gateway knows.
+    """
+
+    path: str = Field(
+        description="Identity within the project, e.g. 'target-postgres.source'.",
+    )
+    name: str = Field(
+        description=(
+            "Display name. The consumer constrains this to 120 characters; "
+            "it is reported as configured rather than truncated here."
+        ),
+    )
+    engine: str | None = Field(
+        default=None,
+        description="Database dialect, e.g. 'postgres'.",
+    )
+    target_host: str = Field(
+        description=(
+            "The database's address as reached from its own network - what "
+            "an agent beside it would dial, not a tunnel endpoint."
+        ),
+    )
+    target_port: int | None = Field(
+        default=None,
+        description="The port on that host. Consumers expect 1-65535.",
+    )
+
+
 class ExportSourcesRequest(BaseModel):
     """A request to write `.source` files to disk."""
 

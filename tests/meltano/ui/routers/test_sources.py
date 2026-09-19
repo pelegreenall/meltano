@@ -473,3 +473,121 @@ class TestConnectionUrlsAreNotLeaked:
 
         url = next(s for s in body["settings"] if s["name"] == "sqlalchemy_url")
         assert url["value"] == "postgresql://db.internal:5432/analytics"
+
+
+class TestProjection:
+    """A `.source` expressed as the connection a registry stores."""
+
+    def test_a_database_connector_projects_to_a_connection(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """The registry's vocabulary, not Meltano's."""
+        body = ui_client.get(
+            f"{SOURCES}/loaders/{database_target.name}/projection",
+        ).json()
+
+        assert body == {
+            "path": "target-warehouse.source",
+            "name": "target-warehouse",
+            "engine": "postgres",
+            "target_host": "warehouse.internal",
+            "target_port": 5432,
+        }
+
+    def test_the_path_is_the_plugin_name_not_the_label(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """`path` is an identity and must not collide.
+
+        Two Postgres loaders would share a label; they cannot share a path,
+        because the registry indexes on it.
+        """
+        body = ui_client.get(
+            f"{SOURCES}/loaders/{database_target.name}/projection",
+        ).json()
+
+        assert body["path"] == f"{database_target.name}.source"
+
+    def test_reachability_fields_are_absent(
+        self,
+        ui_client: TestClient,
+        database_target: ProjectPlugin,
+    ) -> None:
+        """Meltano knows what the database is, not how it is reached.
+
+        Which agent serves it, the credential that agent uses, and whether it
+        is live all belong to the gateway. Sending them as nulls would
+        overwrite what the gateway knows with what Meltano does not.
+        """
+        body = ui_client.get(
+            f"{SOURCES}/loaders/{database_target.name}/projection",
+        ).json()
+
+        for owned_elsewhere in ("connector_id", "token_hash", "state"):
+            assert owned_elsewhere not in body
+
+    def test_a_connector_without_an_endpoint_is_refused(
+        self,
+        ui_client: TestClient,
+        target: ProjectPlugin,
+    ) -> None:
+        """A connector with no database has no connection to register.
+
+        422 rather than a null body: the connector exists, the question just
+        has no answer, and the message says which connectors do have one.
+        """
+        response = ui_client.get(f"{SOURCES}/loaders/{target.name}/projection")
+
+        assert response.status_code == 422
+        assert "does not address a database" in response.json()["detail"]
+
+    def test_an_unknown_connector_is_404(self, ui_client: TestClient) -> None:
+        """Distinct from a connector that simply has no endpoint."""
+        assert ui_client.get(f"{SOURCES}/loaders/nope/projection").status_code == 404
+
+
+class TestProjectionList:
+    """What a registry would sync."""
+
+    @pytest.mark.usefixtures("tap", "database_target")
+    def test_only_connectors_with_an_endpoint_appear(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """An API extractor is absent, not present and empty."""
+        body = ui_client.get(f"{SOURCES}/projection").json()
+
+        assert [entry["path"] for entry in body] == ["target-warehouse.source"]
+
+    @pytest.mark.usefixtures("tap", "target")
+    def test_a_project_with_no_databases_lists_nothing(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """Empty is a valid answer, not an error."""
+        assert ui_client.get(f"{SOURCES}/projection").json() == []
+
+    def test_projection_is_not_read_as_a_plugin_type(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """`/sources/projection` is a literal route.
+
+        Route order decides this, so it is worth pinning: registered the
+        other way round, "projection" reads as a plugin type.
+        """
+        response = ui_client.get(f"{SOURCES}/projection")
+
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    def test_anonymous_access_is_refused(
+        self,
+        ui_client_anonymous: TestClient,
+    ) -> None:
+        """Admission control applies here like anywhere else."""
+        assert ui_client_anonymous.get(f"{SOURCES}/projection").status_code == 401
