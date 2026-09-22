@@ -108,7 +108,7 @@ def pytest_meltano(session: nox.Session) -> None:
         session: Nox session.
     """
     backend_db = os.environ.get("PYTEST_BACKEND", "sqlite")
-    extras = ["azure", "gcs", "s3", "containers"]
+    extras = ["azure", "gcs", "s3", "containers", "ui"]
 
     if backend_db == "mssql":
         extras.append("mssql")
@@ -135,7 +135,7 @@ def pytest_meltano(session: nox.Session) -> None:
 def pytest_lowest_requirements(session: nox.Session) -> None:
     """Test with lowest requirements."""
     backend_db = os.environ.get("PYTEST_BACKEND", "sqlite")
-    extras = ["azure", "gcs", "s3", "containers"]
+    extras = ["azure", "gcs", "s3", "containers", "ui"]
 
     if backend_db == "mssql":
         extras.append("mssql")

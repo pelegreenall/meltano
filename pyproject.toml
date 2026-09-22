@@ -72,6 +72,18 @@ mssql = ["pymssql>=2.3.2,<3"]
 postgres = ["psycopg[binary]>=3.2.3,<4"]
 psycopg2 = ["psycopg2-binary>=2.9.9,<3"]
 s3 = ["boto3>=1.35,<2"]
+ui = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.32,<1",
+  "pydantic>=2.9,<3",
+  # Table-level shaping steps compile to SQL through sqlglot rather than
+  # string concatenation, so dialect differences - null ordering, quoting,
+  # limit syntax - are its problem rather than ours. DuckDB runs the same
+  # compiled query over previewed rows in-process, so a join or an aggregate
+  # can be shown without touching the warehouse.
+  "sqlglot>=25,<31",
+  "duckdb>=1.1,<2",
+]
 
 [project.urls]
 Changelog = "https://github.com/meltano/meltano/blob/main/CHANGELOG.md"
@@ -127,6 +139,8 @@ testing = [
   { include-group = "coverage" },
   "colorama>=0.4.4,<0.5",
   "faker>=37.4.2",
+  # Required by `starlette.testclient`, used to test the `ui` extra.
+  "httpx2>=0.28",
   "moto>=5.1.0,!=5.2.0",
   "pytest>=9",
   "pytest-asyncio>=1.4.0",
@@ -162,6 +176,10 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 include = ["src/meltano"]
+# `src/meltano/ui/static` is gitignored (it is a Vite build output), so it must
+# be listed explicitly as an artifact or it will be omitted from the wheel.
+artifacts = ["src/meltano/ui/static/**"]
+exclude = ["src/meltano/ui/frontend"]
 
 [tool.hatch.build.targets.wheel.sources]
 "src/meltano" = "meltano"
@@ -180,6 +198,9 @@ filterwarnings = [
   'once::meltano.core._compat.MeltanoInternalDeprecationWarning',
   # Third-party warnings
   'once::ResourceWarning',
+  # `starlette.testclient` (used to test the `ui` extra) still imports the
+  # deprecated `anyio.abc.BlockingPortal` alias.
+  'once:The anyio.abc.BlockingPortal alias is deprecated.*:DeprecationWarning',
 ]
 log_level = "INFO"
 markers = [

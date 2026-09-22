@@ -33,6 +33,7 @@ from meltano.cli import (
     schema,
     select_entities,
     state,
+    ui,
     upgrade,
     validate,
 )
@@ -65,6 +66,7 @@ cli.add_command(schedule.schedule)
 cli.add_command(schema.schema)
 cli.add_command(select_entities.select)
 cli.add_command(state.meltano_state)
+cli.add_command(ui.ui)
 cli.add_command(upgrade.upgrade)
 cli.add_command(run.run)
 cli.add_command(validate.test)
