@@ -5,8 +5,10 @@ import {
   api,
   pluginTasks,
   type PreviewResponse,
+  type TableStep,
   type TransformStep,
 } from "../api";
+import { TableSteps } from "./TableSteps";
 import { ErrorNotice, Loading } from "./Status";
 
 /** Step kinds, in the order someone reaches for them. */
@@ -233,6 +235,7 @@ export function DataShaper({
 }) {
   const [stream, setStream] = useState<string | null>(null);
   const [steps, setSteps] = useState<TransformStep[]>([]);
+  const [tableSteps, setTableSteps] = useState<TableStep[]>([]);
   const [result, setResult] = useState<PreviewResponse | null>(null);
   const [limit, setLimit] = useState(20);
   const [mappingName, setMappingName] = useState("");
@@ -245,9 +248,16 @@ export function DataShaper({
     queryFn: api.mapperStatus,
   });
 
+  // Both step lists go in one request: the server applies the row steps and
+  // then the table steps, which is the order a pipeline applies them in too.
   const run = useMutation({
-    mutationFn: (next: TransformStep[]) =>
-      api.preview(pluginType, name, { stream, limit, steps: next }),
+    mutationFn: (next: { steps: TransformStep[]; table: TableStep[] }) =>
+      api.preview(pluginType, name, {
+        stream,
+        limit,
+        steps: next.steps,
+        table_steps: next.table,
+      }),
     onSuccess: setResult,
   });
 
@@ -288,7 +298,12 @@ export function DataShaper({
   // showing the truth rather than a guess.
   const update = (next: TransformStep[]) => {
     setSteps(next);
-    if (result) run.mutate(next);
+    if (result) run.mutate({ steps: next, table: tableSteps });
+  };
+
+  const updateTable = (next: TableStep[]) => {
+    setTableSteps(next);
+    if (result) run.mutate({ steps, table: next });
   };
 
   const streams = Object.keys(result?.schemas ?? {});
@@ -306,7 +321,7 @@ export function DataShaper({
           <button
             type="button"
             className="btn btn-sm"
-            onClick={() => run.mutate(steps)}
+            onClick={() => run.mutate({ steps, table: tableSteps })}
             disabled={run.isPending}
           >
             {run.isPending ? "Reading…" : "Refresh"}
@@ -335,7 +350,7 @@ export function DataShaper({
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => run.mutate(steps)}
+              onClick={() => run.mutate({ steps, table: tableSteps })}
             >
               Load data
             </button>
@@ -426,6 +441,15 @@ export function DataShaper({
               </div>
             </div>
           </div>
+
+          <TableSteps
+            steps={tableSteps}
+            columns={columns}
+            sql={result.sql}
+            streams={streams}
+            stream={target}
+            onChange={updateTable}
+          />
 
           <div className="table-wrap">
             {result.rows.length === 0 ? (

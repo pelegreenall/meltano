@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 # Imported at run time, not just for type checking: pydantic resolves
 # these annotations when the model is built.
+from meltano.ui.schemas.tables import TableStep  # noqa: TC001
 from meltano.ui.services.transforms import (  # noqa: TC001
     CastType,
     Operator,
@@ -49,6 +50,13 @@ class PreviewRequest(BaseModel):
         default_factory=list,
         description="Applied to the rows before they are returned.",
     )
+    table_steps: list[TableStep] = Field(
+        default_factory=list,
+        description=(
+            "Applied after `steps`, over the whole result rather than record "
+            "by record. Grouping, sorting and the like."
+        ),
+    )
 
 
 class PreviewResponse(BaseModel):
@@ -73,6 +81,14 @@ class PreviewResponse(BaseModel):
     stream_map: dict[str, t.Any] = Field(
         default_factory=dict,
         description="The Meltano stream map these steps compile to.",
+    )
+    sql: str | None = Field(
+        default=None,
+        description=(
+            "The query the table steps compile to, or null when there are "
+            "none. Rendered for the destination, not for the engine that "
+            "produced the preview."
+        ),
     )
 
 

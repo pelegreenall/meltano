@@ -308,3 +308,166 @@ class TestCompileEndpoint:
             json={"steps": [{"kind": "drop", "column": "a"}]},
         )
         assert response.status_code == 401
+
+
+TABLE_COMPILE = "/api/v1/tables/compile"
+
+GROUP: dict[str, t.Any] = {
+    "kind": "group_by",
+    "by": ["status"],
+    "aggregates": [{"fn": "count", "as": "n"}],
+}
+
+
+class TestTableCompileEndpoint:
+    """Compiling table-level steps without running anything."""
+
+    def test_it_returns_sql(self, ui_client: TestClient) -> None:
+        """What would become a dbt model, shown while the steps are edited."""
+        body = ui_client.post(
+            TABLE_COMPILE,
+            json={"steps": [GROUP], "source": "stg_orders"},
+        ).json()
+
+        assert "GROUP BY" in body["sql"]
+        assert "stg_orders" in body["sql"]
+        assert body["dialect"] == "postgres"
+
+    def test_the_dialect_is_the_callers_to_choose(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """The same steps are rendered for the destination and the preview."""
+        body = ui_client.post(
+            TABLE_COMPILE,
+            json={"steps": [GROUP], "dialect": "duckdb"},
+        ).json()
+
+        assert body["dialect"] == "duckdb"
+
+    def test_a_step_that_cannot_mean_anything_is_422(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """Grouping with no aggregate is a `DISTINCT` written wrong."""
+        response = ui_client.post(
+            TABLE_COMPILE,
+            json={"steps": [{"kind": "group_by", "by": ["status"]}]},
+        )
+
+        assert response.status_code == 422
+        assert "distinct" in response.json()["detail"]
+
+    def test_an_unknown_kind_is_refused_by_the_schema(
+        self,
+        ui_client: TestClient,
+    ) -> None:
+        """Closed vocabularies are enforced before the compiler sees them."""
+        response = ui_client.post(
+            TABLE_COMPILE,
+            json={"steps": [{"kind": "pivot", "column": "status"}]},
+        )
+
+        assert response.status_code == 422
+
+    def test_anonymous_compile_is_refused(
+        self,
+        ui_client_anonymous: TestClient,
+    ) -> None:
+        """Admission control applies here like anywhere else."""
+        response = ui_client_anonymous.post(TABLE_COMPILE, json={"steps": [GROUP]})
+
+        assert response.status_code == 401
+
+
+@pytest.mark.usefixtures("tap")
+class TestPreviewWithTableSteps:
+    """Table steps applied to the rows a preview read."""
+
+    def test_rows_are_grouped_and_the_sql_comes_back(
+        self,
+        ui_client: TestClient,
+        tap: ProjectPlugin,
+    ) -> None:
+        """The point: an aggregate visible without a pipeline run."""
+        with mock.patch(
+            "meltano.ui.routers.transforms.preview_service.preview_records",
+            new=stub(),
+        ):
+            body = ui_client.post(
+                preview_url(tap),
+                json={"table_steps": [GROUP]},
+            ).json()
+
+        # `GROUP BY` promises nothing about row order, so this is a claim
+        # about which groups came back rather than their sequence.
+        assert sorted(body["rows"], key=repr) == [
+            {"status": "active", "n": 1},
+            {"status": "churned", "n": 1},
+        ]
+        assert "GROUP BY" in body["sql"]
+
+    def test_table_steps_run_after_row_steps(
+        self,
+        ui_client: TestClient,
+        tap: ProjectPlugin,
+    ) -> None:
+        """The order a pipeline applies them in.
+
+        A mapper reshapes records on the way to the destination; a model runs
+        over what landed. A row filter must therefore narrow what the
+        grouping counts.
+        """
+        with mock.patch(
+            "meltano.ui.routers.transforms.preview_service.preview_records",
+            new=stub(),
+        ):
+            body = ui_client.post(
+                preview_url(tap),
+                json={
+                    "steps": [
+                        {
+                            "kind": "filter",
+                            "column": "status",
+                            "operator": "eq",
+                            "value": "active",
+                        },
+                    ],
+                    "table_steps": [GROUP],
+                },
+            ).json()
+
+        assert body["rows"] == [{"status": "active", "n": 1}]
+
+    def test_a_malformed_table_step_does_not_run_the_tap(
+        self,
+        ui_client: TestClient,
+        tap: ProjectPlugin,
+    ) -> None:
+        """Spawning an extractor costs seconds; a typo should not."""
+        runner = stub()
+        with mock.patch(
+            "meltano.ui.routers.transforms.preview_service.preview_records",
+            new=runner,
+        ):
+            response = ui_client.post(
+                preview_url(tap),
+                json={"table_steps": [{"kind": "top_n", "n": 0}]},
+            )
+
+        assert response.status_code == 422
+        runner.assert_not_awaited()
+
+    def test_no_table_steps_leaves_sql_null(
+        self,
+        ui_client: TestClient,
+        tap: ProjectPlugin,
+    ) -> None:
+        """Null rather than an empty string: there is no query."""
+        with mock.patch(
+            "meltano.ui.routers.transforms.preview_service.preview_records",
+            new=stub(),
+        ):
+            body = ui_client.post(preview_url(tap), json={}).json()
+
+        assert body["sql"] is None

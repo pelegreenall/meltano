@@ -18,6 +18,7 @@ from meltano.core.plugin import PluginType
 from meltano.ui.deps import CtxDep, require_auth
 from meltano.ui.errors import HTTP_422_UNPROCESSABLE
 from meltano.ui.routers.config import resolve_plugin
+from meltano.ui.schemas.tables import TableCompileRequest, TableCompileResponse
 from meltano.ui.schemas.transforms import (
     CompileRequest,
     CompileResponse,
@@ -25,6 +26,12 @@ from meltano.ui.schemas.transforms import (
     PreviewResponse,
 )
 from meltano.ui.services import preview as preview_service
+from meltano.ui.services.tables import (
+    PREVIEW_SOURCE,
+    TableStepError,
+    compile_table_steps,
+    preview_table_steps,
+)
 from meltano.ui.services.transforms import TransformError, apply_steps, compile_steps
 
 if t.TYPE_CHECKING:
@@ -108,12 +115,24 @@ async def preview(
     """
     extractor = _resolve_extractor(ctx, plugin_type, name)
     steps = [step.model_dump() for step in payload.steps]
+    table_steps = [step.model_dump(by_alias=True) for step in payload.table_steps]
 
     # Compiled first: a malformed step should not cost the user a tap run.
+    # Both lists, because a mistake in either is the same kind of mistake.
     try:
         stream_map = compile_steps(steps) if steps else {}
     except TransformError as err:
         raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
+
+    sql: str | None = None
+    if table_steps:
+        try:
+            sql = compile_table_steps(
+                table_steps,
+                payload.stream or PREVIEW_SOURCE,
+            )
+        except TableStepError as err:
+            raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
 
     result = await preview_service.preview_records(
         ctx.project,
@@ -147,6 +166,15 @@ async def preview(
         # as a malformed step, because the fix is the same kind of edit.
         raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
 
+    # Table steps run over the result of the row steps, which is the order a
+    # pipeline applies them in too: a mapper reshapes records on the way to
+    # the destination, and the model runs over what landed there.
+    if table_steps:
+        try:
+            rows = preview_table_steps(rows, table_steps)
+        except TableStepError as err:
+            raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
+
     return PreviewResponse(
         extractor=extractor,
         stream=payload.stream,
@@ -158,6 +186,7 @@ async def preview(
         truncated=result.truncated,
         timed_out=result.timed_out,
         stream_map=stream_map,
+        sql=sql,
     )
 
 
@@ -184,3 +213,38 @@ def compile_transform(payload: CompileRequest) -> CompileResponse:
         )
     except TransformError as err:
         raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
+
+
+@router.post("/tables/compile", response_model=TableCompileResponse)
+def compile_table(payload: TableCompileRequest) -> TableCompileResponse:
+    """Compile table-level steps into SQL without running anything.
+
+    The counterpart to `/transforms/compile`. Row steps become a stream map
+    the mapper applies on the way to the destination; these become a query
+    that runs over what landed there, and the UI shows it while the steps are
+    still being edited.
+
+    The dialect is the caller's to name, because the same steps are rendered
+    once for the destination and once for whatever previews them, and those
+    two disagree about more than they ought to.
+
+    Args:
+        payload: The steps, what to select from, and the dialect.
+
+    Returns:
+        The query.
+
+    Raises:
+        HTTPException: 422 when the steps do not compile, or the dialect is
+            not one sqlglot knows.
+    """
+    try:
+        sql = compile_table_steps(
+            [step.model_dump(by_alias=True) for step in payload.steps],
+            payload.source,
+            dialect=payload.dialect,
+        )
+    except TableStepError as err:
+        raise HTTPException(HTTP_422_UNPROCESSABLE, detail=str(err)) from err
+
+    return TableCompileResponse(sql=sql, dialect=payload.dialect)

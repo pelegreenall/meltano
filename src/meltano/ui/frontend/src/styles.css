@@ -1033,3 +1033,41 @@ details > summary {
   color: var(--text-muted);
   font-size: 13px;
 }
+
+/* Building a table-level step needs more controls than a row-level one -
+   which columns to group on, what to compute - so the builder wraps rather
+   than forcing a single line. */
+.step-builder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+/* Grouping columns are picked several at a time, so they read as a set of
+   toggles rather than a list to scroll. */
+.column-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.sql-preview {
+  margin-top: var(--s4);
+}
+
+.sql-preview pre {
+  margin: var(--s2) 0 0;
+  padding: var(--s3);
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-size: 12px;
+  line-height: 1.5;
+}

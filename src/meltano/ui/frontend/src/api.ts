@@ -154,6 +154,33 @@ export interface TransformStep {
 }
 
 /** Rows read from an extractor, after any steps were applied. */
+/** One aggregation within a grouping step. */
+export interface AggregateSpec {
+  fn: "sum" | "count" | "count_distinct" | "avg" | "min" | "max";
+  column?: string | null;
+  /** Named `as` on the wire, which is a reserved word here. */
+  as?: string | null;
+}
+
+/**
+ * One table-level edit.
+ *
+ * Applied after the row-level steps, over the whole result rather than record
+ * by record. A mapper cannot express these at all - it sees one record - so
+ * they compile to SQL that runs after the data has landed.
+ */
+export interface TableStep {
+  kind: "filter" | "group_by" | "sort" | "top_n" | "distinct";
+  column?: string | null;
+  operator?: TransformStep["operator"];
+  value?: unknown;
+  by?: string[];
+  aggregates?: AggregateSpec[];
+  desc?: boolean;
+  n?: number | null;
+  columns?: string[];
+}
+
 export interface PreviewResponse {
   extractor: string;
   stream: string | null;
@@ -165,6 +192,8 @@ export interface PreviewResponse {
   truncated: boolean;
   timed_out: boolean;
   stream_map: Record<string, unknown>;
+  /** The query the table steps compile to; null when there are none. */
+  sql: string | null;
 }
 
 /** Whether a saved mapping would actually be applied by a run. */
@@ -403,9 +432,23 @@ export const api = {
   preview: (
     type: string,
     name: string,
-    body: { stream?: string | null; limit?: number; steps?: TransformStep[] },
+    body: {
+      stream?: string | null;
+      limit?: number;
+      steps?: TransformStep[];
+      table_steps?: TableStep[];
+    },
   ) =>
     request<PreviewResponse>(`/plugins/${type}/${name}/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  compileTable: (body: {
+    steps: TableStep[];
+    source?: string;
+    dialect?: string;
+  }) =>
+    request<{ sql: string; dialect: string }>("/tables/compile", {
       method: "POST",
       body: JSON.stringify(body),
     }),
