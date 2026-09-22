@@ -76,6 +76,13 @@ ui = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.32,<1",
   "pydantic>=2.9,<3",
+  # Table-level shaping steps compile to SQL through sqlglot rather than
+  # string concatenation, so dialect differences - null ordering, quoting,
+  # limit syntax - are its problem rather than ours. DuckDB runs the same
+  # compiled query over previewed rows in-process, so a join or an aggregate
+  # can be shown without touching the warehouse.
+  "sqlglot>=25,<31",
+  "duckdb>=1.1,<2",
 ]
 
 [project.urls]
